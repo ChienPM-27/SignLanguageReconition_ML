@@ -1,0 +1,28 @@
+project:
+  name: ASL-Sign-Recognition
+  seed: 42
+
+dataset:
+  name: WLASL-2000
+  num_classes: 5
+
+input:
+  sequence_length: 32
+  landmark_type: hands
+  num_hands: 2
+  landmarks_per_hand: 21
+  dimensions: 3
+
+model:
+  name: GRU
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.3
+
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 50
+
+inference:
+  confidence_threshold: 0.70

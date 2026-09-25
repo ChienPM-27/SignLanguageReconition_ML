@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+
+# Dataset
+data/raw/videos/*
+!data/raw/videos/.gitkeep
+data/raw/metadata/*
+!data/raw/metadata/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/landmarks/*
+!data/landmarks/.gitkeep
+
+# Model checkpoints
+models/checkpoints/*
+!models/checkpoints/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
