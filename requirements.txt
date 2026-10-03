@@ -9,3 +9,4 @@ tqdm
 jupyter
 torch
 torchvision
+remotezip
