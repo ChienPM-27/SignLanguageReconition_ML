@@ -10,7 +10,7 @@ Hệ thống nhận diện ngôn ngữ ký hiệu Mỹ (American Sign Language -
 - Dự đoán Top-5 kèm độ tin cậy (confidence score) và cơ chế threshold UNKNOWN.
 
 ## 2. Phạm vi phiên bản đầu tiên
-- **Dataset:** WLASL-2000 (bắt đầu với 5 gloss, sau đó mở rộng 10–15 class).
+- **Dataset:** ASL-Citizen (bắt đầu với 10 gloss, sau đó mở rộng 15–20 class).
 - **Trích xuất đặc trưng:** MediaPipe Hands.
 - **Mô hình core:** PyTorch GRU.
 - **Inference:** Realtime webcam với state machine (WAITING ⇄ SIGNING).

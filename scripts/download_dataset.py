@@ -1,1 +1,1 @@
-# Script to download WLASL dataset
+# Script to download ASL-Citizen dataset

@@ -3,8 +3,8 @@ project:
   seed: 42
 
 dataset:
-  name: WLASL-2000
-  num_classes: 5
+  name: ASL-Citizen
+  num_classes: 10
 
 input:
   sequence_length: 32
