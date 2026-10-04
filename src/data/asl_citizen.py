@@ -308,9 +308,22 @@ class _HandProbe:
         else:
             from mediapipe.tasks.python import BaseOptions, vision
             model = Path(model_dir) / "hand_landmarker.task"
-            if not model.exists():
+            if not model.exists() or model.stat().st_size < 1_000_000:
                 model.parent.mkdir(parents=True, exist_ok=True)
-                urllib.request.urlretrieve(HAND_MODEL_URL, model)
+                tmp, last = model.with_suffix(".part"), None
+                for a in range(3):
+                    try:
+                        urllib.request.urlretrieve(HAND_MODEL_URL, tmp)
+                        if tmp.stat().st_size < 1_000_000:
+                            raise IOError(f"file model quá nhỏ ({tmp.stat().st_size} byte)")
+                        os.replace(tmp, model)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        last = e
+                        time.sleep(2 * (a + 1))
+                else:
+                    raise RuntimeError(f"Không tải được model hand_landmarker.task ({last}). Tải tay từ {HAND_MODEL_URL} "
+                                       f"rồi đặt vào {model}")
             opts = vision.HandLandmarkerOptions(
                 base_options=BaseOptions(model_asset_path=str(model)),
                 running_mode=vision.RunningMode.IMAGE, num_hands=2,
@@ -331,7 +344,8 @@ def make_probe(model_dir):
     try:
         return _HandProbe(model_dir)
     except Exception as e:  # noqa: BLE001
-        print(f"⚠ Bỏ qua MediaPipe probe ({type(e).__name__}: {e}). Chọn tier sẽ chỉ dùng motion_diff.")
+        hint = " → chạy: pip install mediapipe" if isinstance(e, ModuleNotFoundError) else ""
+        print(f"⚠ Bỏ qua MediaPipe probe ({type(e).__name__}: {e}){hint}. Chọn tier sẽ chỉ dùng motion_diff.")
         return None
 
 
