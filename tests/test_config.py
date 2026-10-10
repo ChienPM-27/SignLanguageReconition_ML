@@ -243,3 +243,63 @@ def test_override_on_non_dict_section_raises_type_error(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="Section 'env' must be a dictionary"):
         load_config(bad_yaml, overrides=["env.seed=10"])
 
+
+@pytest.mark.parametrize(
+    "removed_key",
+    [
+        "env.drive_project_path",
+        "env.local_root_dir",
+        "data.competition_slug",
+        "data.train_csv_remote",
+        "output.reports_dir",
+        "selection.selection_dir",
+        "selection.output_dir",
+    ],
+)
+def test_removed_config_keys_raise_clear_unknown_key_error(removed_key: str) -> None:
+    """Verify any config override or YAML specifying a removed alias raises KeyError."""
+    with pytest.raises(KeyError, match="Unknown configuration key"):
+        load_config(overrides=[f"{removed_key}=dummy_val"])
+
+
+def test_every_kept_key_override_updates_code_values() -> None:
+    """Verify overriding each single kept key changes the exact value used across modules.
+
+    competition_id is used by BOTH env paths and kaggle_access.
+    selection_dir drives resolved paths.
+    """
+    from src.data import kaggle_access
+    from src.utils.env import ENV_KAGGLE, resolve_paths
+
+    # Verify default competition_id matches DEFAULT_COMPETITION_ID
+    assert load_config().data.competition_id == kaggle_access.DEFAULT_COMPETITION_ID
+
+    cfg = load_config(
+        overrides=[
+            "env.project_dir_name=custom_proj_name",
+            "env.local_root=custom_local_root",
+            "data.competition_id=custom_comp_id",
+            "data.train_csv_name=custom_train.csv",
+            "output.report_dir=custom_reports",
+            "output.selection_dir=custom_selection",
+        ]
+    )
+
+    assert cfg.env.project_dir_name == "custom_proj_name"
+    assert cfg.env.local_root == "custom_local_root"
+    assert cfg.data.competition_id == "custom_comp_id"
+    assert cfg.data.train_csv_name == "custom_train.csv"
+    assert cfg.output.report_dir == "custom_reports"
+    assert cfg.output.selection_dir == "custom_selection"
+
+    # Verify competition_id drives env paths
+    paths_kaggle = resolve_paths(ENV_KAGGLE, cfg, create_dirs=False)
+    assert paths_kaggle.data_dir == Path("/kaggle/input/custom_comp_id")
+
+    # Verify selection_dir drives resolved paths
+    assert paths_kaggle.selection_dir == Path("/kaggle/working/custom_selection")
+
+    # Verify report_dir drives resolved paths
+    assert paths_kaggle.report_dir == Path("/kaggle/working/custom_reports")
+
+

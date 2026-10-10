@@ -5,6 +5,7 @@ idempotent caching, local mirror bypass, zip extraction, and path flattening nor
 """
 
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -575,6 +576,7 @@ def test_colab_files_upload_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     """Verify in Colab with no credentials found, fallback triggers files.upload()."""
     monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
     monkeypatch.delenv("KAGGLE_KEY", raising=False)
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
     fake_home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
@@ -603,5 +605,93 @@ def test_colab_files_upload_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert user == "uploaded_user"
     assert key == "uploaded_key"
     assert source == "colab_file_upload"
+
+
+def test_credential_precedence_colab_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify KAGGLE_API_TOKEN in Colab secrets is discovered and given highest precedence."""
+    class MockUserDataToken:
+        @staticmethod
+        def get(key: str) -> str:
+            if key == "KAGGLE_API_TOKEN":
+                return "colab_secret_token_123"
+            if key == "KAGGLE_USERNAME":
+                return "colab_user"
+            if key == "KAGGLE_KEY":
+                return "colab_key"
+            return ""
+
+    mock_colab = type(sys)("google.colab")
+    mock_colab.userdata = MockUserDataToken()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google.colab", mock_colab)
+    monkeypatch.setitem(sys.modules, "google.colab.userdata", MockUserDataToken())
+
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "env_token")
+    monkeypatch.setenv("KAGGLE_USERNAME", "env_user")
+    monkeypatch.setenv("KAGGLE_KEY", "env_key")
+
+    creds = get_kaggle_credentials()
+    assert creds is not None
+    assert creds.source == SOURCE_COLAB_SECRETS
+    assert creds.token == "colab_secret_token_123"
+
+
+def test_credential_precedence_env_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify KAGGLE_API_TOKEN in environment variables is discovered over username/key."""
+    monkeypatch.delitem(sys.modules, "google.colab", raising=False)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "env_secret_token_456")
+    monkeypatch.setenv("KAGGLE_USERNAME", "env_user")
+    monkeypatch.setenv("KAGGLE_KEY", "env_key")
+
+    creds = get_kaggle_credentials()
+    assert creds is not None
+    assert creds.source == SOURCE_ENV_VARS
+    assert creds.token == "env_secret_token_456"
+
+
+def test_authenticate_with_mocked_import_kaggle_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify authenticate_kaggle_api works with mocked _import_kaggle_api when kaggle is uninstalled."""
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "test_mock_token")
+
+    authenticated_called = False
+
+    class MockKaggleApiInstance:
+        def authenticate(self) -> None:
+            nonlocal authenticated_called
+            authenticated_called = True
+
+    from src.data import kaggle_access
+    monkeypatch.setattr(kaggle_access, "_import_kaggle_api", lambda: MockKaggleApiInstance)
+
+    api = kaggle_access.authenticate_kaggle_api()
+    assert isinstance(api, MockKaggleApiInstance)
+    assert authenticated_called is True
+    assert os.environ.get("KAGGLE_API_TOKEN") == "test_mock_token"
+
+
+def test_check_credentials_happens_before_kaggle_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify credentials check occurs strictly before importing kaggle (KaggleCredentialsNotFoundError raised without import)."""
+    monkeypatch.delitem(sys.modules, "google.colab", raising=False)
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
+    monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
+    monkeypatch.delenv("KAGGLE_KEY", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: Path("/nonexistent/home"))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    from src.data import kaggle_access
+
+    import_called = False
+
+    def mock_import() -> Any:
+        nonlocal import_called
+        import_called = True
+        raise AssertionError("_import_kaggle_api should not be called when credentials are absent!")
+
+    monkeypatch.setattr(kaggle_access, "_import_kaggle_api", mock_import)
+
+    with pytest.raises(KaggleCredentialsNotFoundError):
+        kaggle_access.authenticate_kaggle_api()
+
+    assert import_called is False, "_import_kaggle_api must NOT be called when credentials are absent"
+
 
 

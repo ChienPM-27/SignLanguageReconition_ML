@@ -6,17 +6,19 @@ automatic zip extraction, and normalization of nested paths against Kaggle flatt
 
 from __future__ import annotations
 
+from collections import namedtuple
 import json
 import logging
 import os
 from pathlib import Path
 import shutil
 import sys
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Union
 import zipfile
 
 ENV_KAGGLE_USERNAME = "KAGGLE_USERNAME"
 ENV_KAGGLE_KEY = "KAGGLE_KEY"
+ENV_KAGGLE_API_TOKEN = "KAGGLE_API_TOKEN"
 
 SOURCE_COLAB_SECRETS = "colab_secrets"
 SOURCE_ENV_VARS = "env_vars"
@@ -39,6 +41,31 @@ KAGGLE_CONFIG_DIR = ".kaggle"
 KAGGLE_JSON_FILENAME = "kaggle.json"
 
 
+class KaggleCredentials(namedtuple("KaggleCredentials", ["username", "key", "source", "token"])):
+    """Kaggle credentials container supporting username/key pairs and unified API tokens.
+
+    Unpacks as a 3-tuple (username, key, source) for backward compatibility, while exposing
+    .token, .username, .key, and .source attributes.
+    """
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        username: str = "",
+        key: str = "",
+        source: str = "",
+        token: Optional[str] = None,
+    ) -> KaggleCredentials:
+        # If token is provided but username/key are not, provide token as key or preserve both
+        return super().__new__(cls, username, key, source, token)
+
+    def __iter__(self):
+        # Backward-compatible unpacking: user, key, source = creds
+        yield self.username
+        yield self.key
+        yield self.source
+
+
 class KaggleAccessError(Exception):
     """Base error for Kaggle access and download operations."""
 
@@ -51,13 +78,29 @@ class KaggleRulesNotAcceptedError(KaggleAccessError):
     """Raised when Kaggle returns HTTP 403 due to unaccepted competition rules."""
 
 
-def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str, str, str]]:
+def _import_kaggle_api() -> Any:
+    """Import KaggleApi class from kaggle package, raising clear ImportError if missing.
+
+    Helper function to enable mocking in test environments without requiring kaggle installed.
+    """
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        return KaggleApi
+    except ImportError as exc:
+        raise ImportError(
+            "The 'kaggle' package is not installed. Please run 'pip install kaggle' to enable Kaggle API access."
+        ) from exc
+
+
+def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[KaggleCredentials]:
     """Discover Kaggle credentials following strict fallback precedence.
 
+    Supports KAGGLE_API_TOKEN as well as KAGGLE_USERNAME / KAGGLE_KEY pairs. Never logs credentials.
+
     Precedence:
-        1. Google Colab secrets (google.colab.userdata)
-        2. Environment variables (KAGGLE_USERNAME, KAGGLE_KEY)
-        3. Local configuration file (~/.kaggle/kaggle.json)
+        1. Google Colab secrets (google.colab.userdata: KAGGLE_API_TOKEN or KAGGLE_USERNAME/KAGGLE_KEY)
+        2. Environment variables (KAGGLE_API_TOKEN or KAGGLE_USERNAME/KAGGLE_KEY)
+        3. Local configuration file (~/.kaggle/kaggle.json or $KAGGLE_CONFIG_DIR/kaggle.json)
         4. In Google Colab: interactive fallback via google.colab.files.upload() for kaggle.json
         5. Interactive terminal prompt (if stdin is a TTY and allow_interactive is True)
 
@@ -65,25 +108,34 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
         allow_interactive: Whether to prompt interactively if other sources are absent.
 
     Returns:
-        Optional[Tuple[str, str, str]]: (username, key, source) or None if absent.
+        Optional[KaggleCredentials]: Discovered credentials or None if absent.
     """
     # 1. Colab user secrets
     try:
         from google.colab import userdata
+        token = userdata.get(ENV_KAGGLE_API_TOKEN)
+        t_colab = str(token).strip() if token else ""
+        if t_colab:
+            return KaggleCredentials(username="", key="", source=SOURCE_COLAB_SECRETS, token=t_colab)
+
         username = userdata.get(ENV_KAGGLE_USERNAME)
         key = userdata.get(ENV_KAGGLE_KEY)
         u_colab = str(username).strip() if username else ""
         k_colab = str(key).strip() if key else ""
         if u_colab and k_colab:
-            return u_colab, k_colab, SOURCE_COLAB_SECRETS
+            return KaggleCredentials(username=u_colab, key=k_colab, source=SOURCE_COLAB_SECRETS, token=None)
     except (ImportError, Exception):
         pass
 
     # 2. Environment variables
+    token_env = (os.environ.get(ENV_KAGGLE_API_TOKEN) or "").strip()
+    if token_env:
+        return KaggleCredentials(username="", key="", source=SOURCE_ENV_VARS, token=token_env)
+
     username_env = (os.environ.get(ENV_KAGGLE_USERNAME) or "").strip()
     key_env = (os.environ.get(ENV_KAGGLE_KEY) or "").strip()
     if username_env and key_env:
-        return username_env, key_env, SOURCE_ENV_VARS
+        return KaggleCredentials(username=username_env, key=key_env, source=SOURCE_ENV_VARS, token=None)
 
     # 3. Local configuration file (~/.kaggle/kaggle.json or $KAGGLE_CONFIG_DIR/kaggle.json)
     config_dir_env = os.environ.get("KAGGLE_CONFIG_DIR")
@@ -97,10 +149,13 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
             with open(kaggle_json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
+                token = str(data.get("token") or "").strip()
+                if token:
+                    return KaggleCredentials(username="", key="", source=SOURCE_KAGGLE_JSON, token=token)
                 u = str(data.get("username") or "").strip()
                 k = str(data.get("key") or "").strip()
                 if u and k:
-                    return u, k, SOURCE_KAGGLE_JSON
+                    return KaggleCredentials(username=u, key=k, source=SOURCE_KAGGLE_JSON, token=None)
         except (json.JSONDecodeError, OSError, AttributeError):
             pass
 
@@ -123,18 +178,21 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
                         text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
                         parsed = json.loads(text)
                         if isinstance(parsed, dict):
+                            token = str(parsed.get("token") or "").strip()
                             u = str(parsed.get("username") or "").strip()
                             k = str(parsed.get("key") or "").strip()
-                            if u and k:
+                            if token or (u and k):
                                 target_dir = Path.home() / KAGGLE_CONFIG_DIR
                                 target_dir.mkdir(parents=True, exist_ok=True)
                                 target_file = target_dir / KAGGLE_JSON_FILENAME
-                                target_file.write_text(json.dumps({"username": u, "key": k}), encoding="utf-8")
+                                target_file.write_text(json.dumps(parsed), encoding="utf-8")
                                 try:
                                     target_file.chmod(0o600)
                                 except OSError:
                                     pass
-                                return u, k, SOURCE_COLAB_UPLOAD
+                                if token:
+                                    return KaggleCredentials(username="", key="", source=SOURCE_COLAB_UPLOAD, token=token)
+                                return KaggleCredentials(username=u, key=k, source=SOURCE_COLAB_UPLOAD, token=None)
             except Exception:
                 pass
 
@@ -142,14 +200,17 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
         if sys.stdin.isatty():
             try:
                 import getpass
-                sys.stdout.write("Enter Kaggle Username: ")
+                sys.stdout.write("Enter Kaggle Username (or press Enter if using token): ")
                 sys.stdout.flush()
                 user_input = sys.stdin.readline().strip()
                 if not user_input:
+                    token_input = getpass.getpass("Enter Kaggle API Token: ").strip()
+                    if token_input:
+                        return KaggleCredentials(username="", key="", source=SOURCE_INTERACTIVE_PROMPT, token=token_input)
                     return None
                 key_input = getpass.getpass("Enter Kaggle API Key: ").strip()
                 if key_input:
-                    return user_input, key_input, SOURCE_INTERACTIVE_PROMPT
+                    return KaggleCredentials(username=user_input, key=key_input, source=SOURCE_INTERACTIVE_PROMPT, token=None)
             except Exception:
                 pass
 
@@ -159,7 +220,7 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
 def get_credential_status() -> str:
     """Return presence status of Kaggle credentials without exposing sensitive keys.
 
-    Inspects saved credentials non-interactively.
+    Inspects saved credentials non-interactively. Never logs credentials.
 
     Returns:
         str: 'present' or 'absent'.
@@ -173,6 +234,8 @@ def authenticate_kaggle_api(
 ) -> Any:
     """Authenticate and return KaggleApi instance using discovered credentials.
 
+    Checks credentials BEFORE importing the kaggle package. Never logs credentials.
+
     Args:
         logger: Optional logger for diagnostic messages (credentials are never logged).
 
@@ -180,34 +243,34 @@ def authenticate_kaggle_api(
         KaggleApi: Authenticated API client instance.
 
     Raises:
-        ImportError: If the 'kaggle' package is not installed.
         KaggleCredentialsNotFoundError: If credentials cannot be found.
+        ImportError: If the 'kaggle' package is not installed.
         KaggleRulesNotAcceptedError: If HTTP 403 rules acceptance error occurs.
         KaggleAccessError: If authentication fails.
     """
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApi
-    except ImportError as exc:
-        raise ImportError(
-            "The 'kaggle' package is not installed. Please run 'pip install kaggle' to enable Kaggle API access."
-        ) from exc
-
+    # 1. Discover credentials first before importing kaggle
     creds = get_kaggle_credentials(allow_interactive=True)
     if creds is None:
         raise KaggleCredentialsNotFoundError(
-            "Kaggle credentials not found. Configure KAGGLE_USERNAME and KAGGLE_KEY "
+            "Kaggle credentials not found. Configure KAGGLE_API_TOKEN or KAGGLE_USERNAME and KAGGLE_KEY "
             "as environment variables, in Google Colab secrets, or in ~/.kaggle/kaggle.json."
         )
 
-    username, key, source = creds
-    os.environ[ENV_KAGGLE_USERNAME] = username
-    os.environ[ENV_KAGGLE_KEY] = key
+    # 2. Import kaggle api class
+    kaggle_api_cls = _import_kaggle_api()
+
+    # 3. Configure environment variables for authentication
+    if creds.token:
+        os.environ[ENV_KAGGLE_API_TOKEN] = creds.token
+    if creds.username and creds.key:
+        os.environ[ENV_KAGGLE_USERNAME] = creds.username
+        os.environ[ENV_KAGGLE_KEY] = creds.key
 
     if logger:
-        logger.info("Authenticating Kaggle API via %s.", source)
+        logger.info("Authenticating Kaggle API via %s.", creds.source)
 
     try:
-        api = KaggleApi()
+        api = kaggle_api_cls()
         api.authenticate()
         return api
     except Exception as exc:
@@ -231,7 +294,7 @@ def authenticate_kaggle_api(
         ):
             raise KaggleAccessError(
                 f"HTTP 401 Unauthorized: Kaggle credentials are invalid or expired. "
-                f"Please verify KAGGLE_USERNAME and KAGGLE_KEY. Original error: {exc}"
+                f"Please verify KAGGLE_API_TOKEN or KAGGLE_USERNAME and KAGGLE_KEY. Original error: {exc}"
             ) from exc
         raise KaggleAccessError(f"Kaggle API authentication failed: {exc}") from exc
 

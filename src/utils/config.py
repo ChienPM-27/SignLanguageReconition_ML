@@ -58,9 +58,7 @@ class EnvConfig:
     seed: int = 42
     use_drive: bool = False
     project_dir_name: str = "asl-signs"
-    drive_project_path: str = "asl-signs"
     local_root: str = "."
-    local_root_dir: str = "."
     log_level: str = "INFO"
 
     def validate(self) -> None:
@@ -82,12 +80,8 @@ class EnvConfig:
             )
         if not isinstance(self.project_dir_name, str) or not self.project_dir_name.strip():
             raise ValueError("env.project_dir_name must be a non-empty string.")
-        if not isinstance(self.drive_project_path, str) or not self.drive_project_path.strip():
-            raise ValueError("env.drive_project_path must be a non-empty string.")
         if not isinstance(self.local_root, str) or not self.local_root.strip():
             raise ValueError("env.local_root must be a non-empty string.")
-        if not isinstance(self.local_root_dir, str) or not self.local_root_dir.strip():
-            raise ValueError("env.local_root_dir must be a non-empty string.")
         if not isinstance(self.log_level, str) or self.log_level.upper() not in ALLOWED_LOG_LEVELS:
             raise ValueError(
                 f"Invalid env.log_level '{self.log_level}'. Allowed values are: {sorted(ALLOWED_LOG_LEVELS)}"
@@ -96,9 +90,7 @@ class EnvConfig:
 
 @dataclass
 class DataConfig:
-    competition_slug: str = "asl-signs"
     competition_id: str = "asl-signs"
-    train_csv_remote: str = "train.csv"
     train_csv_name: str = "train.csv"
     parquet_remote_template: str = "train_landmark_files/{participant_id}/{sequence_id}.parquet"
     local_mirror_dir: Optional[str] = None
@@ -111,12 +103,8 @@ class DataConfig:
     landmark_files_dir: str = "train_landmark_files"
 
     def validate(self) -> None:
-        if not isinstance(self.competition_slug, str) or not self.competition_slug.strip():
-            raise ValueError("data.competition_slug must be a non-empty string.")
         if not isinstance(self.competition_id, str) or not self.competition_id.strip():
             raise ValueError("data.competition_id must be a non-empty string.")
-        if not isinstance(self.train_csv_remote, str) or not self.train_csv_remote.strip():
-            raise ValueError("data.train_csv_remote must be a non-empty string.")
         if not isinstance(self.train_csv_name, str) or not self.train_csv_name.strip():
             raise ValueError("data.train_csv_name must be a non-empty string.")
         if not isinstance(self.parquet_remote_template, str) or not self.parquet_remote_template.strip():
@@ -237,8 +225,6 @@ class SelectionConfig:
     force_include_signs: List[str] = field(default_factory=list)
     diversity_method: str = "greedy_maxmin"
     selection_seed: int = 42
-    selection_dir: str = "data/selection"
-    output_dir: str = "data/selection"
 
     def validate(self) -> None:
         if type(self.n_glosses) is bool or not isinstance(self.n_glosses, int) or self.n_glosses < 1:
@@ -281,16 +267,11 @@ class SelectionConfig:
             )
         if type(self.selection_seed) is bool or not isinstance(self.selection_seed, int) or self.selection_seed < 0:
             raise ValueError("selection.selection_seed must be an integer >= 0.")
-        if not isinstance(self.selection_dir, str) or not self.selection_dir.strip():
-            raise ValueError("selection.selection_dir must be a non-empty string.")
-        if not isinstance(self.output_dir, str) or not self.output_dir.strip():
-            raise ValueError("selection.output_dir must be a non-empty string.")
 
 
 @dataclass
 class OutputConfig:
     output_dir: str = "outputs"
-    reports_dir: str = "reports"
     report_dir: str = "reports"
     selection_dir: str = "data/selection"
     save_resolved_config: bool = True
@@ -299,8 +280,6 @@ class OutputConfig:
     def validate(self) -> None:
         if not isinstance(self.output_dir, str) or not self.output_dir.strip():
             raise ValueError("output.output_dir must be a non-empty string.")
-        if not isinstance(self.reports_dir, str) or not self.reports_dir.strip():
-            raise ValueError("output.reports_dir must be a non-empty string.")
         if not isinstance(self.report_dir, str) or not self.report_dir.strip():
             raise ValueError("output.report_dir must be a non-empty string.")
         if not isinstance(self.selection_dir, str) or not self.selection_dir.strip():

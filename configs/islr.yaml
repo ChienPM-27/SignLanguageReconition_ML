@@ -4,15 +4,11 @@ env:
   seed: 42                        # Execution seed for reproducibility
   use_drive: false                # In Colab: mount Google Drive if true
   project_dir_name: "asl-signs"   # Directory name under Google Drive (/content/drive/MyDrive/<name>)
-  drive_project_path: "asl-signs" # Alias for project_dir_name
   local_root: "."                 # Local repository root directory
-  local_root_dir: "."             # Alias for local_root
   log_level: "INFO"               # Allowed: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 data:
-  competition_slug: "asl-signs"   # Competition slug on Kaggle
   competition_id: "asl-signs"     # Competition identifier
-  train_csv_remote: "train.csv"   # Remote metadata catalog CSV path
   train_csv_name: "train.csv"     # Local metadata catalog filename
   parquet_remote_template: "train_landmark_files/{participant_id}/{sequence_id}.parquet"
   local_mirror_dir: null          # Pre-downloaded mirror path to bypass download (null to disable)
@@ -62,13 +58,10 @@ selection:
   force_include_signs: []         # Explicit signs to force include
   diversity_method: "greedy_maxmin" # Allowed: "greedy_maxmin", "top_score"
   selection_seed: 42              # Seed for selection algorithm
-  selection_dir: "data/selection" # Output directory for selection artifacts
-  output_dir: "data/selection"    # Alias for selection_dir
 
 output:
   output_dir: "outputs"           # Directory for general outputs and resolved config
-  reports_dir: "reports"          # Directory for generated reports
-  report_dir: "reports"           # Alias for reports_dir
+  report_dir: "reports"           # Directory for generated reports
   selection_dir: "data/selection" # Directory for gloss selection outputs
   save_resolved_config: true      # Persist resolved config along with artifacts
   overwrite: true                 # Whether to overwrite existing reports and outputs

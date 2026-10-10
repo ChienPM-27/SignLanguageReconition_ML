@@ -151,41 +151,41 @@ def resolve_paths(
     if effective_env == ENV_KAGGLE:
         repo_root = package_repo_root
         persistent_root = Path(KAGGLE_WORKING_DIR)
-        comp_slug = getattr(cfg.data, "competition_slug", None) or getattr(cfg.data, "competition_id", "asl-signs")
-        data_dir = Path(KAGGLE_INPUT_DIR) / comp_slug
-        cache_dir = Path(KAGGLE_TEMP_DIR)
+        data_dir = Path(KAGGLE_INPUT_DIR) / cfg.data.competition_id
+        configured_cache = Path(cfg.data.cache_dir)
+        cache_dir = configured_cache if configured_cache.is_absolute() else Path(KAGGLE_TEMP_DIR) / configured_cache
         output_dir = persistent_root / cfg.output.output_dir
-        report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
-        selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
+        report_dir = persistent_root / cfg.output.report_dir
+        selection_dir = persistent_root / cfg.output.selection_dir
         is_readonly = True
 
     elif effective_env == ENV_COLAB:
         repo_root = package_repo_root
-        proj_name = getattr(cfg.env, "project_dir_name", None) or getattr(cfg.env, "drive_project_path", "asl-signs")
-        clean_proj_name = proj_name.strip().strip("/\\")
+        clean_proj_name = cfg.env.project_dir_name.strip().strip("/\\")
 
         if cfg.env.use_drive:
             if create_dirs:
                 _mount_colab_drive_if_needed()
             persistent_root = Path(COLAB_DRIVE_MYDRIVE_PREFIX) / clean_proj_name
             data_dir = persistent_root / DEFAULT_DATA_DIR_NAME
-            cache_dir = persistent_root / "cache"
+            configured_cache = Path(cfg.data.cache_dir)
+            cache_dir = configured_cache if configured_cache.is_absolute() else persistent_root / configured_cache
             output_dir = persistent_root / cfg.output.output_dir
-            report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
-            selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
+            report_dir = persistent_root / cfg.output.report_dir
+            selection_dir = persistent_root / cfg.output.selection_dir
         else:
             persistent_root = Path(COLAB_ROOT_DIR)
             data_dir = persistent_root / DEFAULT_DATA_DIR_NAME
-            cache_dir = persistent_root / "cache"
+            configured_cache = Path(cfg.data.cache_dir)
+            cache_dir = configured_cache if configured_cache.is_absolute() else Path(COLAB_ROOT_DIR) / configured_cache
             output_dir = persistent_root / cfg.output.output_dir
-            report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
-            selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
+            report_dir = persistent_root / cfg.output.report_dir
+            selection_dir = persistent_root / cfg.output.selection_dir
         is_readonly = False
 
     else:  # local
         repo_root = package_repo_root
-        conf_local_root = getattr(cfg.env, "local_root", None) or getattr(cfg.env, "local_root_dir", ".")
-        local_path = Path(conf_local_root)
+        local_path = Path(cfg.env.local_root)
         persistent_root = local_path.resolve() if local_path.is_absolute() else (repo_root / local_path).resolve()
 
         if cfg.data.local_mirror_dir:
@@ -194,10 +194,11 @@ def resolve_paths(
         else:
             data_dir = (persistent_root / DEFAULT_DATA_DIR_NAME).resolve()
 
-        cache_dir = (persistent_root / getattr(cfg.data, "cache_dir", "data/cache")).resolve()
+        configured_cache = Path(cfg.data.cache_dir)
+        cache_dir = configured_cache.resolve() if configured_cache.is_absolute() else (repo_root / configured_cache).resolve()
         output_dir = (persistent_root / cfg.output.output_dir).resolve()
-        report_dir = (persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))).resolve()
-        selection_dir = (persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))).resolve()
+        report_dir = (persistent_root / cfg.output.report_dir).resolve()
+        selection_dir = (persistent_root / cfg.output.selection_dir).resolve()
         is_readonly = False
 
     if create_dirs:
