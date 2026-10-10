@@ -15,6 +15,7 @@ setup_check_module = importlib.import_module("scripts.00_setup_check")
 read_catalog_csv = setup_check_module.read_catalog_csv
 verify_parquet_schema = setup_check_module.verify_parquet_schema
 run_setup_check = setup_check_module.run_setup_check
+sample_catalog_records = setup_check_module.sample_catalog_records
 EXIT_CODE_SUCCESS = setup_check_module.EXIT_CODE_SUCCESS
 
 EXPECTED_COLUMNS = ["frame", "row_id", "type", "landmark_index", "x", "y", "z"]
@@ -461,4 +462,94 @@ def test_read_catalog_csv_missing_metadata_field_raises_value_error(tmp_path: Pa
     )
     with pytest.raises(ValueError, match="contains empty or missing 'participant_id'"):
         read_catalog_csv(csv_file)
+
+
+def test_sample_catalog_records_spread_over_participants() -> None:
+    """Verify sample_catalog_records spreads round-robin across distinct participants."""
+    records = [
+        {"path": "p1_s1.parquet", "participant_id": "p1", "sequence_id": "s1", "sign": "a"},
+        {"path": "p1_s2.parquet", "participant_id": "p1", "sequence_id": "s2", "sign": "b"},
+        {"path": "p2_s1.parquet", "participant_id": "p2", "sequence_id": "s3", "sign": "c"},
+        {"path": "p2_s2.parquet", "participant_id": "p2", "sequence_id": "s4", "sign": "d"},
+        {"path": "p3_s1.parquet", "participant_id": "p3", "sequence_id": "s5", "sign": "e"},
+    ]
+
+    # Sample 3: should take exactly 1 from p1, 1 from p2, 1 from p3
+    sampled = sample_catalog_records(records, n_samples=3, strategy="spread_over_participants", seed=42)
+    assert len(sampled) == 3
+    participants = {r["participant_id"] for r in sampled}
+    assert participants == {"p1", "p2", "p3"}
+
+    # Sample 4: all 3 participants, then a second row from one
+    sampled_4 = sample_catalog_records(records, n_samples=4, strategy="spread_over_participants", seed=42)
+    assert len(sampled_4) == 4
+    assert len({r["participant_id"] for r in sampled_4}) == 3
+
+
+def test_sample_catalog_records_random() -> None:
+    """Verify sample_catalog_records with random strategy returns exact requested count."""
+    records = [
+        {"path": f"p_{i}.parquet", "participant_id": str(i), "sequence_id": str(i), "sign": "a"}
+        for i in range(10)
+    ]
+    sampled = sample_catalog_records(records, n_samples=4, strategy="random", seed=42)
+    assert len(sampled) == 4
+    assert len({r["sequence_id"] for r in sampled}) == 4
+
+
+def test_run_setup_check_probes_multiple_files_budget(tmp_path: Path) -> None:
+    """Verify run_setup_check probes min(eda.num_landmark_probe_files, data.sample_budget_total_files) files."""
+    out_dir = tmp_path / "outputs"
+    rep_dir = tmp_path / "reports"
+    mirror_dir = tmp_path / "mirror"
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    rel_p1 = "train_landmark_files/111/101.parquet"
+    rel_p2 = "train_landmark_files/222/201.parquet"
+
+    train_csv = mirror_dir / "train.csv"
+    train_csv.write_text(
+        "path,participant_id,sequence_id,sign\n"
+        f"{rel_p1},111,101,blow\n"
+        f"{rel_p2},222,201,wait\n",
+        encoding="utf-8",
+    )
+
+    # Create both parquets
+    for rel_p in (rel_p1, rel_p2):
+        target = mirror_dir / Path(rel_p)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        count = EXPECTED_LANDMARK_COUNT
+        table = pa.Table.from_arrays(
+            [
+                pa.array([0] * count, type=pa.int16()),
+                pa.array([f"0-face-{i}" for i in range(count)]),
+                pa.array(["face"] * 468 + ["left_hand"] * 21 + ["pose"] * 33 + ["right_hand"] * 21),
+                pa.array(list(range(468)) + list(range(21)) + list(range(33)) + list(range(21)), type=pa.int16()),
+                pa.array([0.5] * count, type=pa.float32()),
+                pa.array([0.5] * count, type=pa.float32()),
+                pa.array([0.5] * count, type=pa.float32()),
+            ],
+            names=EXPECTED_COLUMNS,
+        )
+        pq.write_table(table, target)
+
+    cfg = load_config(
+        overrides=[
+            f"output.output_dir={out_dir}",
+            f"output.report_dir={rep_dir}",
+            f"data.local_mirror_dir={mirror_dir}",
+            "eda.num_landmark_probe_files=2",
+            "data.sample_budget_total_files=5",
+        ]
+    )
+    exit_code = run_setup_check(cfg)
+    assert exit_code == EXIT_CODE_SUCCESS
+
+    schema_report = (rep_dir / "islr_schema.md").read_text(encoding="utf-8")
+    assert "- **Probed Files**: 2" in schema_report
+    assert "Fewer than 5 files were probed" in schema_report
+    # Because both files came from local mirror:
+    assert "Not observed: all files came from local mirror/cache; run once on a clean Colab cache." in schema_report
+
 

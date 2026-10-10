@@ -7,6 +7,7 @@ automatic zip extraction, and normalization of nested paths against Kaggle flatt
 from __future__ import annotations
 
 from collections import namedtuple
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -64,6 +65,40 @@ class KaggleCredentials(namedtuple("KaggleCredentials", ["username", "key", "sou
         yield self.username
         yield self.key
         yield self.source
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Record of observed file fetch behavior."""
+    path: Path
+    source: str  # in {"local_mirror", "cache", "downloaded"}
+    delivered_as: Optional[str] = None  # in {"nested", "flat", "zip", None}
+    relocated: bool = False
+
+    def __fspath__(self) -> str:
+        """Allow FetchResult to be used directly in open(), Path(), etc."""
+        return str(self.path)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, FetchResult):
+            return (
+                self.path == other.path
+                and self.source == other.source
+                and self.delivered_as == other.delivered_as
+                and self.relocated == other.relocated
+            )
+        if isinstance(other, (Path, str)):
+            return self.path == Path(other)
+        return False
+
+    def __hash__(self) -> int:
+        return hash((self.path, self.source, self.delivered_as, self.relocated))
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.path, name)
 
 
 class KaggleAccessError(Exception):
@@ -306,7 +341,7 @@ def fetch_file(
     local_mirror_dir: Optional[Union[str, Path]] = None,
     logger: Optional[logging.Logger] = None,
     dest_dir: Optional[Union[str, Path]] = None,
-) -> Path:
+) -> FetchResult:
     """Fetch a single competition file, checking local mirror and caching idempotently.
 
     Empirically handles nested remote paths regardless of Kaggle CLI flattening behavior.
@@ -320,7 +355,7 @@ def fetch_file(
         dest_dir: Backward-compatible alias for dest.
 
     Returns:
-        Path: Canonical local path to the fetched and uncompressed file.
+        FetchResult: Record containing canonical local path, source, delivered_as, and relocated.
 
     Raises:
         KaggleRulesNotAcceptedError: On HTTP 403 forbidden response.
@@ -361,13 +396,23 @@ def fetch_file(
                     "Local mirror hit for '%s': bypassing download.",
                     normalized_remote_path,
                 )
-            return mirror_candidate
+            return FetchResult(
+                path=mirror_candidate,
+                source="local_mirror",
+                delivered_as=None,
+                relocated=False,
+            )
 
     # 2. Check idempotent cache at target path
     if target_path.is_file() and target_path.stat().st_size > EMPTY_FILE_SIZE_BYTES:
         if logger:
             logger.info("Cache hit for '%s': %s.", normalized_remote_path, target_path)
-        return target_path
+        return FetchResult(
+            path=target_path,
+            source="cache",
+            delivered_as=None,
+            relocated=False,
+        )
 
     # Clean up empty/corrupted zero-byte target if left by prior failed attempt
     if target_path.is_file() and target_path.stat().st_size == EMPTY_FILE_SIZE_BYTES:
@@ -376,12 +421,19 @@ def fetch_file(
     # 3. Check if file is already present in flattened location inside dest
     flat_candidate = dest_base / flat_filename
     if flat_candidate.is_file() and flat_candidate.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+        relocated = False
         if flat_candidate.resolve() != target_path.resolve():
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(flat_candidate), str(target_path))
+            relocated = True
             if logger:
                 logger.info("Relocated flattened file '%s' to '%s'.", flat_candidate, target_path)
-        return target_path
+        return FetchResult(
+            path=target_path,
+            source="cache",
+            delivered_as=None,
+            relocated=relocated,
+        )
 
     if flat_candidate.is_file() and flat_candidate.stat().st_size == EMPTY_FILE_SIZE_BYTES:
         flat_candidate.unlink(missing_ok=True)
@@ -452,8 +504,10 @@ def fetch_file(
             seen_zips.add(pz)
             possible_zips.append(pz)
 
+    was_zip = False
     for zip_path in possible_zips:
         if zip_path.is_file():
+            was_zip = True
             if logger:
                 logger.info("Extracting downloaded zip archive '%s'...", zip_path)
             try:
@@ -467,24 +521,71 @@ def fetch_file(
                 ) from zip_exc
 
     # 6. Normalize nested paths against Kaggle flattening behavior
-    if target_path.is_file() and target_path.stat().st_size > EMPTY_FILE_SIZE_BYTES:
-        return target_path
-
-    if flat_candidate.is_file() and flat_candidate.stat().st_size > EMPTY_FILE_SIZE_BYTES:
-        if flat_candidate.resolve() != target_path.resolve():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(flat_candidate), str(target_path))
-        return target_path
-
-    # Search in destination for any matching file by name
-    matches = list(dest_base.rglob(flat_filename))
-    for match in matches:
-        if match.is_file() and match.stat().st_size > EMPTY_FILE_SIZE_BYTES:
-            if match.resolve() == target_path.resolve():
-                return target_path
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(match), str(target_path))
-            return target_path
+    if was_zip:
+        if target_path.is_file() and target_path.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+            return FetchResult(
+                path=target_path,
+                source="downloaded",
+                delivered_as="zip",
+                relocated=False,
+            )
+        if flat_candidate.is_file() and flat_candidate.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+            relocated = flat_candidate.resolve() != target_path.resolve()
+            if relocated:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(flat_candidate), str(target_path))
+            return FetchResult(
+                path=target_path,
+                source="downloaded",
+                delivered_as="zip",
+                relocated=relocated,
+            )
+        matches = list(dest_base.rglob(flat_filename))
+        for match in matches:
+            if match.is_file() and match.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+                relocated = match.resolve() != target_path.resolve()
+                if relocated:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(match), str(target_path))
+                return FetchResult(
+                    path=target_path,
+                    source="downloaded",
+                    delivered_as="zip",
+                    relocated=relocated,
+                )
+    else:
+        if target_path.is_file() and target_path.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+            delivered_as = "nested" if remote_path_obj.parent != Path(".") else "flat"
+            return FetchResult(
+                path=target_path,
+                source="downloaded",
+                delivered_as=delivered_as,
+                relocated=False,
+            )
+        if flat_candidate.is_file() and flat_candidate.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+            relocated = flat_candidate.resolve() != target_path.resolve()
+            if relocated:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(flat_candidate), str(target_path))
+            return FetchResult(
+                path=target_path,
+                source="downloaded",
+                delivered_as="flat",
+                relocated=relocated,
+            )
+        matches = list(dest_base.rglob(flat_filename))
+        for match in matches:
+            if match.is_file() and match.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+                relocated = match.resolve() != target_path.resolve()
+                if relocated:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(match), str(target_path))
+                return FetchResult(
+                    path=target_path,
+                    source="downloaded",
+                    delivered_as="nested",
+                    relocated=relocated,
+                )
 
     raise FileNotFoundError(
         f"File '{normalized_remote_path}' was downloaded but could not be located at '{target_path}'."

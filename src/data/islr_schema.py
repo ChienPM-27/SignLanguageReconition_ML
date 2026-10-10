@@ -10,9 +10,10 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
@@ -65,6 +66,8 @@ class ParquetSummary:
     right_hand_nan_rate: float
     face_nan_rate: float
     pose_nan_rate: float
+    left_hand_present_frame_rate: float
+    right_hand_present_frame_rate: float
     unique_types: List[str]
     type_mismatches: List[str]
     is_valid: bool
@@ -213,6 +216,36 @@ def inspect_parquet_file(parquet_path: Union[str, Path]) -> ParquetSummary:
     face_nan_rate = _compute_nan_rate_for_type("face")
     pose_nan_rate = _compute_nan_rate_for_type("pose")
 
+    def _compute_hand_present_frame_rate(type_name: str) -> float:
+        if num_frames <= 0 or not coord_cols or len(coord_cols) < 3:
+            return 0.0
+        mask = pc.equal(table.column("type"), type_name)
+        hand_table = table.filter(mask)
+        if hand_table.num_rows == 0:
+            return 0.0
+
+        is_valid_row = None
+        for coord in ("x", "y", "z"):
+            col = hand_table.column(coord)
+            not_null = pc.invert(pc.is_null(col))
+            not_nan = pc.invert(pc.is_nan(col))
+            is_valid_coord = pc.and_(not_null, not_nan)
+            is_valid_row = is_valid_coord if is_valid_row is None else pc.and_(is_valid_row, is_valid_coord)
+
+        valid_rows_table = hand_table.filter(is_valid_row)
+        if valid_rows_table.num_rows == 0:
+            return 0.0
+
+        frame_counts = pc.value_counts(valid_rows_table.column("frame"))
+        counts = frame_counts.field("counts")
+        expected_cnt = EXPECTED_LANDMARK_COUNTS_PER_TYPE.get(type_name, 21)
+        present_mask = pc.equal(counts, expected_cnt)
+        present_frames = pc.sum(pc.cast(present_mask, pa.int64())).as_py() or 0
+        return float(present_frames / num_frames)
+
+    lh_present_rate = _compute_hand_present_frame_rate("left_hand")
+    rh_present_rate = _compute_hand_present_frame_rate("right_hand")
+
     is_valid = (
         len(col_mismatches) == 0
         and len(type_mismatches) == 0
@@ -232,16 +265,46 @@ def inspect_parquet_file(parquet_path: Union[str, Path]) -> ParquetSummary:
         right_hand_nan_rate=round(rh_nan_rate, 4),
         face_nan_rate=round(face_nan_rate, 4),
         pose_nan_rate=round(pose_nan_rate, 4),
+        left_hand_present_frame_rate=round(lh_present_rate, 4),
+        right_hand_present_frame_rate=round(rh_present_rate, 4),
         unique_types=unique_types,
         type_mismatches=type_mismatches,
         is_valid=is_valid,
     )
 
 
+def format_nested_path_behavior(nested_path_behavior: Any) -> str:
+    """Format observed nested-path download facts for Section 7 of schema report."""
+    if isinstance(nested_path_behavior, str):
+        return nested_path_behavior
+
+    from src.data.kaggle_access import FetchResult
+
+    if isinstance(nested_path_behavior, FetchResult):
+        results = [nested_path_behavior]
+    elif isinstance(nested_path_behavior, (list, tuple)):
+        results = [r for r in nested_path_behavior if isinstance(r, FetchResult)]
+        if not results:
+            return str(nested_path_behavior)
+    else:
+        return str(nested_path_behavior)
+
+    if not results or all(r.source in {"local_mirror", "cache"} for r in results):
+        return "Not observed: all files came from local mirror/cache; run once on a clean Colab cache."
+
+    downloaded = [r for r in results if r.source == "downloaded"]
+    lines = []
+    for r in downloaded:
+        lines.append(
+            f"- {r.path.name}: source={r.source}, delivered_as={r.delivered_as}, relocated={r.relocated}"
+        )
+    return "\n".join(lines)
+
+
 def verify_schema(
     catalog_path: Union[str, Path],
     parquet_paths: List[Union[str, Path]],
-    nested_path_behavior: str = "Preserved nested hierarchy relative to data directory",
+    nested_path_behavior: Union[str, Any] = "Not observed: all files came from local mirror/cache; run once on a clean Colab cache.",
 ) -> SchemaVerificationReport:
     """Perform end-to-end schema verification comparing catalog and parquets to specifications."""
     cat_summary = inspect_catalog_csv(catalog_path)
@@ -274,12 +337,13 @@ def verify_schema(
             discrepancies.extend([f"{ps.file_path}: {m}" for m in ps.landmark_count_mismatches])
 
     all_expectations_met = len(discrepancies) == 0
+    behavior_str = format_nested_path_behavior(nested_path_behavior)
 
     return SchemaVerificationReport(
         catalog_summary=cat_summary,
         parquet_summaries=parquet_summaries,
         frames_per_sequence_stats=frames_stats,
-        nested_path_behavior=nested_path_behavior,
+        nested_path_behavior=behavior_str,
         all_expectations_met=all_expectations_met,
         discrepancies=discrepancies,
     )
@@ -336,25 +400,34 @@ def generate_schema_markdown_report(report: SchemaVerificationReport) -> str:
         lines.extend([
             "",
             "## 5. Missing Data / NaN Rate Analysis",
-            "| Subsystem | NaN Rate | Notes |",
-            "| :--- | :--- | :--- |",
-            f"| Left Hand | {sample_pq.left_hand_nan_rate * 100:.1f}% | Missing frames allowed when left hand is non-dominant |",
-            f"| Right Hand | {sample_pq.right_hand_nan_rate * 100:.1f}% | Missing frames allowed when right hand is non-dominant |",
-            f"| Face | {sample_pq.face_nan_rate * 100:.1f}% | Face landmark coverage |",
-            f"| Pose | {sample_pq.pose_nan_rate * 100:.1f}% | Body pose landmark coverage |",
+            "| Subsystem | NaN Rate | Frames with Hand Present | Notes |",
+            "| :--- | :--- | :--- | :--- |",
+            f"| Left Hand | {sample_pq.left_hand_nan_rate * 100:.1f}% | {sample_pq.left_hand_present_frame_rate * 100:.1f}% | Missing frames allowed when left hand is non-dominant |",
+            f"| Right Hand | {sample_pq.right_hand_nan_rate * 100:.1f}% | {sample_pq.right_hand_present_frame_rate * 100:.1f}% | Missing frames allowed when right hand is non-dominant |",
+            f"| Face | {sample_pq.face_nan_rate * 100:.1f}% | N/A | Face landmark coverage |",
+            f"| Pose | {sample_pq.pose_nan_rate * 100:.1f}% | N/A | Body pose landmark coverage |",
         ])
 
     lines.extend([
         "",
         "## 6. Frames per Sequence Distribution (Sampled)",
+        f"- **Probed Files**: {len(report.parquet_summaries)}",
         f"- **Min Frames**: {report.frames_per_sequence_stats['min']:.1f}",
         f"- **Median Frames**: {report.frames_per_sequence_stats['median']:.1f}",
         f"- **Mean Frames**: {report.frames_per_sequence_stats['mean']:.1f} ± {report.frames_per_sequence_stats['std']:.1f}",
         f"- **Max Frames**: {report.frames_per_sequence_stats['max']:.1f}",
+    ])
+
+    if len(report.parquet_summaries) < 5:
+        lines.append(
+            f"- ⚠️ **Warning**: Fewer than 5 files were probed ({len(report.parquet_summaries)} file(s)). "
+            "Sequence length distribution statistics may be limited."
+        )
+
+    lines.extend([
         "",
         "## 7. Remote Nested-Path CLI Behavior",
-        f"- **Observed Behavior**: {report.nested_path_behavior}",
-        "- **Resolution Guardrail**: Handled via `src/data/kaggle_access.py:fetch_file`, normalizing flattened downloads into canonical `train_landmark_files/<participant_id>/<sequence_id>.parquet` destination directories.",
+        f"{report.nested_path_behavior}",
         "",
         "## 8. Discrepancies and Mismatches",
     ])

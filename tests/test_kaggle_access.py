@@ -694,4 +694,67 @@ def test_check_credentials_happens_before_kaggle_import(monkeypatch: pytest.Monk
     assert import_called is False, "_import_kaggle_api must NOT be called when credentials are absent"
 
 
+def test_fetch_result_metadata_mirror_and_cache(tmp_path: Path) -> None:
+    """Verify FetchResult attributes for mirror bypass and cache hit."""
+    mirror_dir = tmp_path / "mirror"
+    mirror_file = mirror_dir / "train.csv"
+    mirror_dir.mkdir(parents=True)
+    mirror_file.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    dest_dir = tmp_path / "dest"
+    res_mirror = fetch_file(
+        remote_path="train.csv",
+        dest_dir=dest_dir,
+        local_mirror_dir=mirror_dir,
+    )
+    assert res_mirror.source == "local_mirror"
+    assert res_mirror.delivered_as is None
+    assert res_mirror.relocated is False
+    assert res_mirror.path == mirror_file
+
+    # Cache hit
+    cached_file = dest_dir / DUMMY_REMOTE_FILE
+    cached_file.parent.mkdir(parents=True)
+    cached_file.write_text("data", encoding="utf-8")
+    res_cache = fetch_file(
+        remote_path=DUMMY_REMOTE_FILE,
+        dest_dir=dest_dir,
+        competition_id=SAMPLE_COMPETITION,
+    )
+    assert res_cache.source == "cache"
+    assert res_cache.delivered_as is None
+    assert res_cache.relocated is False
+    assert res_cache.path == cached_file
+
+
+def test_fetch_result_metadata_downloaded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify FetchResult attributes for downloaded files (flat, zip, nested)."""
+    monkeypatch.setenv("KAGGLE_USERNAME", "u")
+    monkeypatch.setenv("KAGGLE_KEY", "k")
+
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir(parents=True)
+
+    class MockKaggleApiFlat:
+        def authenticate(self) -> None:
+            pass
+
+        def competition_download_file(self, **kwargs: Any) -> None:
+            flat_target = dest_dir / "1000035562.parquet"
+            flat_target.write_text("fake_parquet_content", encoding="utf-8")
+
+    from src.data import kaggle_access
+    monkeypatch.setattr(kaggle_access, "authenticate_kaggle_api", lambda logger=None: MockKaggleApiFlat())
+
+    res = fetch_file(
+        remote_path=DUMMY_REMOTE_FILE,
+        dest_dir=dest_dir,
+        competition_id=SAMPLE_COMPETITION,
+    )
+    assert res.source == "downloaded"
+    assert res.delivered_as == "flat"
+    assert res.relocated is True
+    assert res.path == dest_dir / DUMMY_REMOTE_FILE
+
+
 

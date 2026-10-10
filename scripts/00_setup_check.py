@@ -7,8 +7,10 @@ and nested remote path resolution.
 
 from __future__ import annotations
 
+import collections
 import csv
 from pathlib import Path
+import random
 import sys
 from typing import Any, Dict, List, Union
 import yaml
@@ -132,6 +134,55 @@ def read_catalog_csv(csv_path: Union[str, Path]) -> List[Dict[str, str]]:
                 )
 
     return rows
+
+
+def sample_catalog_records(
+    catalog_rows: List[Dict[str, str]],
+    n_samples: int,
+    strategy: str = "spread_over_participants",
+    seed: int = 42,
+) -> List[Dict[str, str]]:
+    """Sample catalog records using specified strategy and seed.
+
+    If strategy is 'spread_over_participants', round-robin selects records across distinct
+    participants to maximize participant diversity.
+    If strategy is 'random', randomly samples records across all rows.
+    """
+    if n_samples <= 0:
+        return []
+    if n_samples >= len(catalog_rows):
+        return list(catalog_rows)
+
+    rng = random.Random(seed)
+
+    if strategy == "random":
+        indices = rng.sample(range(len(catalog_rows)), n_samples)
+        return [catalog_rows[i] for i in indices]
+
+    by_participant: Dict[str, List[Dict[str, str]]] = collections.defaultdict(list)
+    for row in catalog_rows:
+        p_id = row.get("participant_id", "")
+        by_participant[p_id].append(row)
+
+    for rows in by_participant.values():
+        rng.shuffle(rows)
+
+    participants = sorted(by_participant.keys())
+    rng.shuffle(participants)
+
+    selected: List[Dict[str, str]] = []
+    while len(selected) < n_samples:
+        added_in_round = False
+        for p in participants:
+            if by_participant[p]:
+                selected.append(by_participant[p].pop(0))
+                added_in_round = True
+                if len(selected) == n_samples:
+                    break
+        if not added_in_round:
+            break
+
+    return selected
 
 
 def verify_parquet_schema(
@@ -311,53 +362,75 @@ def run_setup_check(cfg: Config) -> int:
         len(catalog_rows),
     )
 
-    # 2. Probe exactly 1 parquet file
-    num_probe_files = cfg.eda.num_landmark_probe_files
-    if num_probe_files != EXPECTED_PROBE_FILE_COUNT:
-        raise ValueError(
-            f"Phase 0 setup check requires exactly {EXPECTED_PROBE_FILE_COUNT} probe file, configured: {num_probe_files}"
+    # 2. Probe landmark files
+    budget = min(cfg.eda.num_landmark_probe_files, cfg.data.sample_budget_total_files)
+    logger.info(
+        "Probing landmark files: budget=%d (configured probe=%d, sample budget=%d, strategy=%s)...",
+        budget,
+        cfg.eda.num_landmark_probe_files,
+        cfg.data.sample_budget_total_files,
+        cfg.data.sample_strategy,
+    )
+    sampled_records = sample_catalog_records(
+        catalog_rows=catalog_rows,
+        n_samples=budget,
+        strategy=cfg.data.sample_strategy,
+        seed=cfg.data.sample_seed,
+    )
+    if not sampled_records:
+        raise ValueError(f"No records available to probe (budget was {budget}).")
+
+    fetch_observations = []
+    probed_parquet_paths = []
+    schema_summaries = []
+
+    for idx, sample_record in enumerate(sampled_records, start=1):
+        sample_remote_path = sample_record[PATH_COLUMN_NAME]
+        logger.info(
+            "Probing landmark file [%d of %d]: %s",
+            idx,
+            len(sampled_records),
+            sample_remote_path,
+        )
+        fetch_result = fetch_file(
+            remote_path=sample_remote_path,
+            dest_dir=paths.data_dir,
+            competition_id=cfg.data.competition_id,
+            local_mirror_dir=cfg.data.local_mirror_dir,
+            logger=logger,
+        )
+        fetch_observations.append(fetch_result)
+        probed_parquet_paths.append(fetch_result.path)
+        logger.info(
+            "Nested path resolved: '%s' -> '%s' (source=%s)",
+            sample_remote_path,
+            fetch_result.path,
+            fetch_result.source,
         )
 
-    sample_record = catalog_rows[FIRST_SAMPLE_INDEX]
-    sample_remote_path = sample_record[PATH_COLUMN_NAME]
-    logger.info(
-        "Probing landmark file [1 of %d]: %s",
-        num_probe_files,
-        sample_remote_path,
-    )
-
-    parquet_file_path = fetch_file(
-        remote_path=sample_remote_path,
-        dest_dir=paths.data_dir,
-        competition_id=cfg.data.competition_id,
-        local_mirror_dir=cfg.data.local_mirror_dir,
-        logger=logger,
-    )
-    logger.info("Nested path resolved: '%s' -> '%s'", sample_remote_path, parquet_file_path)
-
-    # 3. Verify parquet schema
-    schema_summary = verify_parquet_schema(
-        parquet_path=parquet_file_path,
-        expected_columns=cfg.eda.expected_columns,
-        num_expected_landmarks=cfg.eda.num_expected_landmarks,
-    )
+        schema_summary = verify_parquet_schema(
+            parquet_path=fetch_result.path,
+            expected_columns=cfg.eda.expected_columns,
+            num_expected_landmarks=cfg.eda.num_expected_landmarks,
+        )
+        schema_summaries.append(schema_summary)
 
     logger.info("-" * SEPARATOR_LINE_LENGTH)
-    logger.info("Parquet Landmark Schema Summary:")
-    logger.info("  Rows:                 %d", schema_summary["num_rows"])
-    logger.info("  Frames:               %d", schema_summary["num_frames"])
-    logger.info("  Landmarks per Frame:  %d", schema_summary["landmarks_per_frame"])
-    logger.info("  Distinct Types:       %s", schema_summary["landmark_types"])
-    logger.info("  Columns:              %s", schema_summary["column_names"])
-    logger.info("  Types:                %s", schema_summary["column_types"])
-    logger.info("  Schema Verified:      %s", schema_summary["schema_verified"])
+    logger.info("Parquet Landmark Schema Summary (First Probed File):")
+    logger.info("  Rows:                 %d", schema_summaries[0]["num_rows"])
+    logger.info("  Frames:               %d", schema_summaries[0]["num_frames"])
+    logger.info("  Landmarks per Frame:  %d", schema_summaries[0]["landmarks_per_frame"])
+    logger.info("  Distinct Types:       %s", schema_summaries[0]["landmark_types"])
+    logger.info("  Columns:              %s", schema_summaries[0]["column_names"])
+    logger.info("  Types:                %s", schema_summaries[0]["column_types"])
+    logger.info("  Schema Verified:      %s", schema_summaries[0]["schema_verified"])
     logger.info("-" * SEPARATOR_LINE_LENGTH)
 
     # 4. Generate comprehensive Phase 1 schema report
     schema_verification = verify_schema(
         catalog_path=train_csv_path,
-        parquet_paths=[parquet_file_path],
-        nested_path_behavior=f"Canonical nested hierarchy '{sample_remote_path}' verified",
+        parquet_paths=probed_parquet_paths,
+        nested_path_behavior=fetch_observations,
     )
     schema_md_content = generate_schema_markdown_report(schema_verification)
     schema_report_file = paths.report_dir / SCHEMA_REPORT_FILENAME
@@ -381,10 +454,25 @@ def run_setup_check(cfg: Config) -> int:
             "catalog_path": str(train_csv_path),
             "catalog_records": len(catalog_rows),
             "probed_file": {
-                "remote_path": sample_remote_path,
-                "local_path": str(parquet_file_path),
-                "schema_summary": schema_summary,
+                "remote_path": sampled_records[0][PATH_COLUMN_NAME],
+                "local_path": str(probed_parquet_paths[0]),
+                "schema_summary": schema_summaries[0],
             },
+            "probed_files": [
+                {
+                    "remote_path": rec[PATH_COLUMN_NAME],
+                    "local_path": str(p),
+                    "schema_summary": sm,
+                    "fetch_observation": {
+                        "source": obs.source,
+                        "delivered_as": obs.delivered_as,
+                        "relocated": obs.relocated,
+                    },
+                }
+                for rec, p, sm, obs in zip(
+                    sampled_records, probed_parquet_paths, schema_summaries, fetch_observations
+                )
+            ],
             "schema_verification": {
                 "all_expectations_met": schema_verification.all_expectations_met,
                 "discrepancies": schema_verification.discrepancies,
