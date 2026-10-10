@@ -1,0 +1,2 @@
+# Dependencies specifically for webcam and video landmark inference
+mediapipe>=0.10.0

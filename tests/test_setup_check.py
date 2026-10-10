@@ -202,15 +202,66 @@ def test_verify_parquet_schema_unknown_landmark_type(tmp_path: Path) -> None:
 
 
 def test_run_setup_check_end_to_end(tmp_path: Path) -> None:
-    """Verify full end-to-end execution of setup check against sample local mirror."""
+    """Verify full end-to-end execution of setup check against self-contained local mirror."""
     out_dir = tmp_path / "outputs"
     rep_dir = tmp_path / "reports"
+    mirror_dir = tmp_path / "mirror"
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+
+    rel_parquet_path = "train_landmark_files/26734/1000035562.parquet"
+    train_csv = mirror_dir / "train.csv"
+    train_csv.write_text(
+        "path,participant_id,sequence_id,sign\n"
+        f"{rel_parquet_path},26734,1000035562,blow\n",
+        encoding="utf-8",
+    )
+
+    parquet_file = mirror_dir / Path(rel_parquet_path)
+    parquet_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # 543 landmarks per frame: face=468, left_hand=21, pose=33, right_hand=21
+    num_frames = 2
+    types_per_frame = ["face"] * 468 + ["left_hand"] * 21 + ["pose"] * 33 + ["right_hand"] * 21
+    indices_per_frame = list(range(468)) + list(range(21)) + list(range(33)) + list(range(21))
+
+    frames = [0] * 543 + [1] * 543
+    all_types = types_per_frame * num_frames
+    all_indices = indices_per_frame * num_frames
+    row_ids = [f"{f}-{t}-{idx}" for f in (0, 1) for t, idx in zip(types_per_frame, indices_per_frame)]
+
+    # NaN allowed on one hand (left_hand coordinates set to NaN)
+    x_coords = []
+    y_coords = []
+    z_coords = []
+    for t in all_types:
+        if t == "left_hand":
+            x_coords.append(float("nan"))
+            y_coords.append(float("nan"))
+            z_coords.append(float("nan"))
+        else:
+            x_coords.append(0.5)
+            y_coords.append(0.5)
+            z_coords.append(0.5)
+
+    table = pa.Table.from_arrays(
+        [
+            pa.array(frames, type=pa.int16()),
+            pa.array(row_ids, type=pa.string()),
+            pa.array(all_types, type=pa.string()),
+            pa.array(all_indices, type=pa.int16()),
+            pa.array(x_coords, type=pa.float32()),
+            pa.array(y_coords, type=pa.float32()),
+            pa.array(z_coords, type=pa.float32()),
+        ],
+        names=EXPECTED_COLUMNS,
+    )
+    pq.write_table(table, parquet_file)
 
     cfg = load_config(
         overrides=[
             f"output.output_dir={out_dir}",
             f"output.report_dir={rep_dir}",
-            "data.local_mirror_dir=data/local_mirror",
+            f"data.local_mirror_dir={mirror_dir}",
             "eda.num_landmark_probe_files=1",
         ]
     )

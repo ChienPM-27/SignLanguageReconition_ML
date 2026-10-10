@@ -1,6 +1,6 @@
 """Strictly typed configuration system for ISLR Phase 0.
 
-Provides dataclass-based validation, YAML loading, CLI override handling,
+Provides dataclass-based validation, YAML loading, arbitrary depth CLI override handling,
 and configuration serialization with zero magic numbers.
 """
 
@@ -8,51 +8,38 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field, fields
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 import yaml
 
 DEFAULT_CONFIG_PATH = "configs/islr.yaml"
+
 ALLOWED_ENV_NAMES = frozenset({"auto", "local", "colab", "kaggle"})
 ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+ALLOWED_SAMPLE_STRATEGIES = frozenset({"spread_over_participants", "random"})
+ALLOWED_REQUIRE_HANDS = frozenset({"any", "dominant_only", "both"})
+ALLOWED_DIVERSITY_METHODS = frozenset({"greedy_maxmin", "top_score"})
 
-DEFAULT_CONFIG_SEED = 42
-DEFAULT_SAMPLE_BUDGET_TOTAL_FILES = 5
-DEFAULT_NUM_LANDMARK_PROBE_FILES = 1
-DEFAULT_NUM_EXPECTED_LANDMARKS = 543
+ALLOWED_WEIGHT_KEYS = frozenset({
+    "samples",
+    "participant_coverage",
+    "participant_balance",
+    "hand_coverage",
+    "motion_energy",
+    "separability",
+    "handshape_diversity",
+})
 
-DEFAULT_ENV_NAME = "auto"
-DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_DRIVE_PROJECT_PATH = "asl-signs"
-DEFAULT_LOCAL_ROOT_DIR = "."
-DEFAULT_COMPETITION_ID = "asl-signs"
-DEFAULT_LOCAL_MIRROR_DIR = "data/local_mirror"
-DEFAULT_TRAIN_CSV_NAME = "train.csv"
-DEFAULT_LANDMARK_FILES_DIR = "train_landmark_files"
-DEFAULT_SELECTION_OUTPUT_DIR = "data/selection"
-DEFAULT_OUTPUT_DIR = "outputs"
-DEFAULT_REPORT_DIR = "reports"
+ALLOWED_CANDIDATE_PREFILTER_KEYS = frozenset({
+    "min_samples",
+    "min_participants",
+    "max_participant_dominance",
+})
 
 MIN_SEED = 0
 MIN_SAMPLE_BUDGET_FILES = 1
 MIN_LANDMARK_PROBE_FILES = 1
 MIN_EXPECTED_LANDMARKS = 1
-MIN_EXPECTED_COLUMNS = 1
-
-OVERRIDE_KV_DELIMITER = "="
-KEY_PATH_DELIMITER = "."
-MAX_SPLIT_OVERRIDE = 1
-MAX_KEY_PATH_TOKENS = 2
-SECTION_KEY_INDEX = 0
-FIELD_KEY_INDEX = 1
-SINGLE_SECTION_TOKEN_COUNT = 1
-REPO_ROOT_PARENT_LEVEL = 2
-
-CLI_CONFIG_FLAG = "--config"
-CLI_SET_FLAG = "--set"
-
-YAML_INDENT = 2
 
 REQUIRED_LANDMARK_COLUMNS = frozenset({
     "frame",
@@ -67,12 +54,14 @@ REQUIRED_LANDMARK_COLUMNS = frozenset({
 
 @dataclass
 class EnvConfig:
-    name: str = DEFAULT_ENV_NAME
-    seed: int = DEFAULT_CONFIG_SEED
+    name: str = "auto"
+    seed: int = 42
     use_drive: bool = False
-    drive_project_path: str = DEFAULT_DRIVE_PROJECT_PATH
-    local_root_dir: str = DEFAULT_LOCAL_ROOT_DIR
-    log_level: str = DEFAULT_LOG_LEVEL
+    project_dir_name: str = "asl-signs"
+    drive_project_path: str = "asl-signs"
+    local_root: str = "."
+    local_root_dir: str = "."
+    log_level: str = "INFO"
 
     def validate(self) -> None:
         if self.name not in ALLOWED_ENV_NAMES:
@@ -91,8 +80,12 @@ class EnvConfig:
             raise TypeError(
                 f"env.use_drive must be a boolean, got {type(self.use_drive).__name__}"
             )
+        if not isinstance(self.project_dir_name, str) or not self.project_dir_name.strip():
+            raise ValueError("env.project_dir_name must be a non-empty string.")
         if not isinstance(self.drive_project_path, str) or not self.drive_project_path.strip():
             raise ValueError("env.drive_project_path must be a non-empty string.")
+        if not isinstance(self.local_root, str) or not self.local_root.strip():
+            raise ValueError("env.local_root must be a non-empty string.")
         if not isinstance(self.local_root_dir, str) or not self.local_root_dir.strip():
             raise ValueError("env.local_root_dir must be a non-empty string.")
         if not isinstance(self.log_level, str) or self.log_level.upper() not in ALLOWED_LOG_LEVELS:
@@ -103,18 +96,36 @@ class EnvConfig:
 
 @dataclass
 class DataConfig:
-    competition_id: str = DEFAULT_COMPETITION_ID
-    local_mirror_dir: Optional[str] = DEFAULT_LOCAL_MIRROR_DIR
-    sample_budget_total_files: int = DEFAULT_SAMPLE_BUDGET_TOTAL_FILES
-    train_csv_name: str = DEFAULT_TRAIN_CSV_NAME
-    landmark_files_dir: str = DEFAULT_LANDMARK_FILES_DIR
+    competition_slug: str = "asl-signs"
+    competition_id: str = "asl-signs"
+    train_csv_remote: str = "train.csv"
+    train_csv_name: str = "train.csv"
+    parquet_remote_template: str = "train_landmark_files/{participant_id}/{sequence_id}.parquet"
+    local_mirror_dir: Optional[str] = None
+    cache_dir: str = "data/cache"
+    sample_budget_total_files: int = 5
+    seqs_per_candidate_sign: int = 2
+    sample_strategy: str = "spread_over_participants"
+    sample_seed: int = 42
+    parquet_hand_types: List[str] = field(default_factory=lambda: ["left_hand", "right_hand"])
+    landmark_files_dir: str = "train_landmark_files"
 
     def validate(self) -> None:
+        if not isinstance(self.competition_slug, str) or not self.competition_slug.strip():
+            raise ValueError("data.competition_slug must be a non-empty string.")
         if not isinstance(self.competition_id, str) or not self.competition_id.strip():
             raise ValueError("data.competition_id must be a non-empty string.")
+        if not isinstance(self.train_csv_remote, str) or not self.train_csv_remote.strip():
+            raise ValueError("data.train_csv_remote must be a non-empty string.")
+        if not isinstance(self.train_csv_name, str) or not self.train_csv_name.strip():
+            raise ValueError("data.train_csv_name must be a non-empty string.")
+        if not isinstance(self.parquet_remote_template, str) or not self.parquet_remote_template.strip():
+            raise ValueError("data.parquet_remote_template must be a non-empty string.")
         if self.local_mirror_dir is not None:
             if not isinstance(self.local_mirror_dir, str) or not self.local_mirror_dir.strip():
                 raise ValueError("data.local_mirror_dir must be None or a non-empty string.")
+        if not isinstance(self.cache_dir, str) or not self.cache_dir.strip():
+            raise ValueError("data.cache_dir must be a non-empty string.")
         if type(self.sample_budget_total_files) is bool or not isinstance(self.sample_budget_total_files, int):
             raise TypeError(
                 f"data.sample_budget_total_files must be an integer, got {type(self.sample_budget_total_files).__name__}"
@@ -123,16 +134,31 @@ class DataConfig:
             raise ValueError(
                 f"data.sample_budget_total_files must be >= {MIN_SAMPLE_BUDGET_FILES}, got {self.sample_budget_total_files}"
             )
-        if not isinstance(self.train_csv_name, str) or not self.train_csv_name.strip():
-            raise ValueError("data.train_csv_name must be a non-empty string.")
+        if type(self.seqs_per_candidate_sign) is bool or not isinstance(self.seqs_per_candidate_sign, int):
+            raise TypeError("data.seqs_per_candidate_sign must be an integer.")
+        if self.seqs_per_candidate_sign < 1:
+            raise ValueError("data.seqs_per_candidate_sign must be >= 1.")
+        if self.sample_strategy not in ALLOWED_SAMPLE_STRATEGIES:
+            raise ValueError(
+                f"Invalid data.sample_strategy '{self.sample_strategy}'. "
+                f"Allowed values are: {sorted(ALLOWED_SAMPLE_STRATEGIES)}"
+            )
+        if type(self.sample_seed) is bool or not isinstance(self.sample_seed, int):
+            raise TypeError("data.sample_seed must be an integer.")
+        if not isinstance(self.parquet_hand_types, list) or not self.parquet_hand_types:
+            raise ValueError("data.parquet_hand_types must be a non-empty list.")
         if not isinstance(self.landmark_files_dir, str) or not self.landmark_files_dir.strip():
             raise ValueError("data.landmark_files_dir must be a non-empty string.")
 
 
 @dataclass
 class EDAConfig:
-    num_landmark_probe_files: int = DEFAULT_NUM_LANDMARK_PROBE_FILES
-    num_expected_landmarks: int = DEFAULT_NUM_EXPECTED_LANDMARKS
+    num_landmark_probe_files: int = 1
+    num_expected_landmarks: int = 543
+    top_n_plot: int = 20
+    min_frames: int = 10
+    max_frames: int = 200
+    min_hand_coverage: float = 0.1
     expected_columns: List[str] = field(
         default_factory=lambda: [
             "frame",
@@ -162,7 +188,15 @@ class EDAConfig:
             raise ValueError(
                 f"eda.num_expected_landmarks must be >= {MIN_EXPECTED_LANDMARKS}, got {self.num_expected_landmarks}"
             )
-        if not isinstance(self.expected_columns, list) or len(self.expected_columns) < MIN_EXPECTED_COLUMNS:
+        if type(self.top_n_plot) is bool or not isinstance(self.top_n_plot, int) or self.top_n_plot < 1:
+            raise ValueError("eda.top_n_plot must be an integer >= 1.")
+        if type(self.min_frames) is bool or not isinstance(self.min_frames, int) or self.min_frames < 1:
+            raise ValueError("eda.min_frames must be an integer >= 1.")
+        if type(self.max_frames) is bool or not isinstance(self.max_frames, int) or self.max_frames <= self.min_frames:
+            raise ValueError("eda.max_frames must be an integer greater than eda.min_frames.")
+        if not isinstance(self.min_hand_coverage, (int, float)) or not (0.0 <= self.min_hand_coverage <= 1.0):
+            raise ValueError("eda.min_hand_coverage must be a float between 0.0 and 1.0.")
+        if not isinstance(self.expected_columns, list) or not self.expected_columns:
             raise ValueError("eda.expected_columns must be a non-empty list of column names.")
         for col in self.expected_columns:
             if not isinstance(col, str) or not col.strip():
@@ -178,27 +212,106 @@ class EDAConfig:
 
 @dataclass
 class SelectionConfig:
-    output_dir: str = DEFAULT_SELECTION_OUTPUT_DIR
+    n_glosses: int = 20
+    n_candidates: int = 60
+    candidate_prefilter: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "min_samples": 10,
+            "min_participants": 5,
+            "max_participant_dominance": 0.5,
+        }
+    )
+    weights: Dict[str, float] = field(
+        default_factory=lambda: {
+            "samples": 1.0,
+            "participant_coverage": 1.0,
+            "participant_balance": 1.0,
+            "hand_coverage": 1.0,
+            "motion_energy": 1.0,
+            "separability": 1.0,
+            "handshape_diversity": 1.0,
+        }
+    )
+    require_hands: str = "any"
+    exclude_signs: List[str] = field(default_factory=list)
+    force_include_signs: List[str] = field(default_factory=list)
+    diversity_method: str = "greedy_maxmin"
+    selection_seed: int = 42
+    selection_dir: str = "data/selection"
+    output_dir: str = "data/selection"
 
     def validate(self) -> None:
+        if type(self.n_glosses) is bool or not isinstance(self.n_glosses, int) or self.n_glosses < 1:
+            raise ValueError("selection.n_glosses must be an integer >= 1.")
+        if type(self.n_candidates) is bool or not isinstance(self.n_candidates, int) or self.n_candidates < self.n_glosses:
+            raise ValueError("selection.n_candidates must be >= selection.n_glosses.")
+        if not isinstance(self.candidate_prefilter, dict):
+            raise TypeError("selection.candidate_prefilter must be a dictionary.")
+        for k in self.candidate_prefilter.keys():
+            if k not in ALLOWED_CANDIDATE_PREFILTER_KEYS:
+                raise KeyError(
+                    f"Unknown candidate_prefilter key '{k}'. "
+                    f"Allowed keys: {sorted(ALLOWED_CANDIDATE_PREFILTER_KEYS)}"
+                )
+        if not isinstance(self.weights, dict):
+            raise TypeError("selection.weights must be a dictionary.")
+        for k, v in self.weights.items():
+            if k not in ALLOWED_WEIGHT_KEYS:
+                raise KeyError(
+                    f"Unknown weight key '{k}' in selection.weights. "
+                    f"Allowed keys: {sorted(ALLOWED_WEIGHT_KEYS)}"
+                )
+            if not isinstance(v, (int, float)):
+                raise TypeError(f"Weight '{k}' must be a numeric value, got {type(v).__name__}")
+            if v < 0:
+                raise ValueError(f"Weight '{k}' must be non-negative, got {v}")
+        if self.require_hands not in ALLOWED_REQUIRE_HANDS:
+            raise ValueError(
+                f"Invalid selection.require_hands '{self.require_hands}'. "
+                f"Allowed values: {sorted(ALLOWED_REQUIRE_HANDS)}"
+            )
+        if not isinstance(self.exclude_signs, list):
+            raise TypeError("selection.exclude_signs must be a list.")
+        if not isinstance(self.force_include_signs, list):
+            raise TypeError("selection.force_include_signs must be a list.")
+        if self.diversity_method not in ALLOWED_DIVERSITY_METHODS:
+            raise ValueError(
+                f"Invalid selection.diversity_method '{self.diversity_method}'. "
+                f"Allowed values: {sorted(ALLOWED_DIVERSITY_METHODS)}"
+            )
+        if type(self.selection_seed) is bool or not isinstance(self.selection_seed, int) or self.selection_seed < 0:
+            raise ValueError("selection.selection_seed must be an integer >= 0.")
+        if not isinstance(self.selection_dir, str) or not self.selection_dir.strip():
+            raise ValueError("selection.selection_dir must be a non-empty string.")
         if not isinstance(self.output_dir, str) or not self.output_dir.strip():
             raise ValueError("selection.output_dir must be a non-empty string.")
 
 
 @dataclass
 class OutputConfig:
-    output_dir: str = DEFAULT_OUTPUT_DIR
-    report_dir: str = DEFAULT_REPORT_DIR
+    output_dir: str = "outputs"
+    reports_dir: str = "reports"
+    report_dir: str = "reports"
+    selection_dir: str = "data/selection"
     save_resolved_config: bool = True
+    overwrite: bool = True
 
     def validate(self) -> None:
         if not isinstance(self.output_dir, str) or not self.output_dir.strip():
             raise ValueError("output.output_dir must be a non-empty string.")
+        if not isinstance(self.reports_dir, str) or not self.reports_dir.strip():
+            raise ValueError("output.reports_dir must be a non-empty string.")
         if not isinstance(self.report_dir, str) or not self.report_dir.strip():
             raise ValueError("output.report_dir must be a non-empty string.")
+        if not isinstance(self.selection_dir, str) or not self.selection_dir.strip():
+            raise ValueError("output.selection_dir must be a non-empty string.")
         if not isinstance(self.save_resolved_config, bool):
             raise TypeError(
                 f"output.save_resolved_config must be a boolean, got {type(self.save_resolved_config).__name__}"
+            )
+        if not isinstance(self.overwrite, bool):
+            raise TypeError(
+                f"output.overwrite must be a boolean, got {type(self.overwrite).__name__}"
             )
 
 
@@ -243,60 +356,82 @@ def _get_allowed_keys_for_section(section_name: str) -> Set[str]:
 
 
 def _apply_override(cfg_dict: Dict[str, Any], override_str: str) -> None:
-    """Apply a single key.path=val override to the raw dictionary."""
-    if OVERRIDE_KV_DELIMITER not in override_str:
+    """Apply an arbitrary depth key.path=val override to the raw dictionary."""
+    if "=" not in override_str:
         raise ValueError(
             f"Invalid override format '{override_str}'. Expected 'key.path=val'."
         )
 
-    key_path, val_str = override_str.split(OVERRIDE_KV_DELIMITER, MAX_SPLIT_OVERRIDE)
+    key_path, val_str = override_str.split("=", 1)
     key_path = key_path.strip()
     if not key_path:
         raise ValueError(f"Empty key path in override '{override_str}'.")
 
-    # Safely parse the value using PyYAML
     try:
         parsed_val = yaml.safe_load(val_str)
     except yaml.YAMLError as exc:
         raise ValueError(
-            f"Invalid YAML value '{val_str}' in override '{override_str}': {exc}"
+            f"Failed to parse override value '{val_str}' for key '{key_path}': {exc}"
         ) from exc
 
-    tokens = key_path.split(KEY_PATH_DELIMITER)
-    section_name = tokens[SECTION_KEY_INDEX]
+    tokens = [t.strip() for t in key_path.split(".")]
+    if len(tokens) < 2:
+        raise ValueError(
+            f"Override '{key_path}' must specify at least a section and field name (e.g. 'env.seed=42')."
+        )
+
+    section_name = tokens[0]
     if section_name not in _SECTION_CLASSES:
         raise KeyError(
             f"Unknown configuration section '{section_name}' in override '{key_path}'. "
             f"Valid sections are: {sorted(_SECTION_CLASSES.keys())}"
         )
 
-    allowed_section_keys = _get_allowed_keys_for_section(section_name)
-    if len(tokens) == SINGLE_SECTION_TOKEN_COUNT:
-        raise ValueError(
-            f"Override '{key_path}' targets an entire section. Specify a full path, e.g. 'env.seed=123'."
-        )
-
-    field_name = tokens[FIELD_KEY_INDEX]
-    if field_name not in allowed_section_keys:
-        raise KeyError(
-            f"Unknown configuration key '{field_name}' in section '{section_name}'. "
-            f"Allowed keys: {sorted(allowed_section_keys)}"
-        )
-
-    if len(tokens) > MAX_KEY_PATH_TOKENS:
-        raise KeyError(
-            f"Unknown nested configuration key '{key_path}'. "
-            f"Section '{section_name}.{field_name}' does not contain nested keys."
-        )
-
     if section_name in cfg_dict and not isinstance(cfg_dict[section_name], dict):
         raise TypeError(
             f"Section '{section_name}' must be a dictionary, got {type(cfg_dict[section_name]).__name__}"
         )
-    if section_name not in cfg_dict:
-        cfg_dict[section_name] = {}
 
-    cfg_dict[section_name][field_name] = parsed_val
+    field_name = tokens[1]
+    allowed_keys = _get_allowed_keys_for_section(section_name)
+    if field_name not in allowed_keys:
+        raise KeyError(
+            f"Unknown configuration key '{field_name}' in section '{section_name}'. "
+            f"Allowed keys: {sorted(allowed_keys)}"
+        )
+
+    section_cls = _SECTION_CLASSES[section_name]
+    target_field = next(f for f in fields(section_cls) if f.name == field_name)
+
+    if len(tokens) > 2:
+        # Check if target_field is typed as a dict
+        origin = getattr(target_field.type, "__origin__", target_field.type)
+        is_dict_field = (
+            origin is dict
+            or target_field.type is dict
+            or (isinstance(target_field.type, str) and "Dict" in target_field.type)
+        )
+        if not is_dict_field:
+            raise TypeError(
+                f"Cannot access nested key on non-dict field '{section_name}.{field_name}' "
+                f"(type is {target_field.type})."
+            )
+
+        if section_name not in cfg_dict or not isinstance(cfg_dict[section_name], dict):
+            cfg_dict[section_name] = {}
+        if field_name not in cfg_dict[section_name] or not isinstance(cfg_dict[section_name][field_name], dict):
+            cfg_dict[section_name][field_name] = {}
+
+        curr = cfg_dict[section_name][field_name]
+        for inner_key in tokens[2:-1]:
+            if inner_key not in curr or not isinstance(curr[inner_key], dict):
+                curr[inner_key] = {}
+            curr = curr[inner_key]
+        curr[tokens[-1]] = parsed_val
+    else:
+        if section_name not in cfg_dict or not isinstance(cfg_dict[section_name], dict):
+            cfg_dict[section_name] = {}
+        cfg_dict[section_name][field_name] = parsed_val
 
 
 def _build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:
@@ -355,8 +490,7 @@ def load_config(
     """
     path = Path(config_path)
     if not path.is_file():
-        # Fallback to repo root if path is relative
-        repo_candidate = (Path(__file__).resolve().parents[REPO_ROOT_PARENT_LEVEL] / path).resolve()
+        repo_candidate = (Path(__file__).resolve().parent.parent.parent / path).resolve()
         if repo_candidate.is_file():
             path = repo_candidate
         else:
@@ -393,7 +527,7 @@ def save_config(cfg: Config, target_path: Union[str, Path]) -> Path:
     out_path = Path(target_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        yaml.dump(cfg.to_dict(), f, indent=YAML_INDENT, sort_keys=False)
+        yaml.dump(cfg.to_dict(), f, indent=2, sort_keys=False)
     return out_path
 
 
@@ -412,17 +546,17 @@ def parse_cli_args(
         description="ISLR Phase 0 Configuration and Setup Runner"
     )
     parser.add_argument(
-        CLI_CONFIG_FLAG,
+        "--config",
         type=str,
         default=DEFAULT_CONFIG_PATH,
         help=f"Path to YAML configuration file (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
-        CLI_SET_FLAG,
+        "--set",
         action="append",
         dest="overrides",
         default=None,
-        help="Override config value formatted as 'section.key=val' (can be repeated)",
+        help="Override config value formatted as 'section.key=val' or 'section.field.inner=val'",
     )
 
     parsed_args = parser.parse_args(args)

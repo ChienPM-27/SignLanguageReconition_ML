@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 import yaml
 
 SYS_PATH_INSERT_INDEX = 0
@@ -316,9 +316,8 @@ def run_setup_check(cfg: Config) -> int:
     sample_record = catalog_rows[FIRST_SAMPLE_INDEX]
     sample_remote_path = sample_record[PATH_COLUMN_NAME]
     logger.info(
-        "Probing landmark file [%d of %d]: %s",
+        "Probing landmark file [1 of %d]: %s",
         num_probe_files,
-        cfg.data.sample_budget_total_files,
         sample_remote_path,
     )
 

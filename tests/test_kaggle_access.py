@@ -557,3 +557,51 @@ def test_fetch_file_http_401_unauthorized_error(monkeypatch: pytest.MonkeyPatch,
             competition_id=SAMPLE_COMPETITION,
         )
 
+
+def test_missing_kaggle_package_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify missing kaggle package raises ImportError with clear installation instructions."""
+    monkeypatch.setenv("KAGGLE_USERNAME", "some_user")
+    monkeypatch.setenv("KAGGLE_KEY", "some_key")
+
+    monkeypatch.setitem(sys.modules, "kaggle", None)
+    monkeypatch.setitem(sys.modules, "kaggle.api.kaggle_api_extended", None)
+
+    from src.data.kaggle_access import authenticate_kaggle_api
+    with pytest.raises(ImportError, match="pip install kaggle"):
+        authenticate_kaggle_api()
+
+
+def test_colab_files_upload_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify in Colab with no credentials found, fallback triggers files.upload()."""
+    monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
+    monkeypatch.delenv("KAGGLE_KEY", raising=False)
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    class MockUserData:
+        @staticmethod
+        def get(key: str) -> None:
+            return None
+
+    class MockFiles:
+        @staticmethod
+        def upload() -> dict:
+            return {
+                "kaggle.json": json.dumps({"username": "uploaded_user", "key": "uploaded_key"}).encode("utf-8")
+            }
+
+    mock_colab = type(sys)("google.colab")
+    mock_colab.userdata = MockUserData()  # type: ignore[attr-defined]
+    mock_colab.files = MockFiles()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google.colab", mock_colab)
+    monkeypatch.setitem(sys.modules, "google.colab.userdata", MockUserData())
+    monkeypatch.setitem(sys.modules, "google.colab.files", MockFiles())
+
+    creds = get_kaggle_credentials(allow_interactive=True)
+    assert creds is not None
+    user, key, source = creds
+    assert user == "uploaded_user"
+    assert key == "uploaded_key"
+    assert source == "colab_file_upload"
+
+

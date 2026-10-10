@@ -15,7 +15,7 @@ if str(repo_root) not in sys.path:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from src.data.preprocessing import DEFAULT_20_GLOSSES, create_splits_from_csv, select_glosses, verify_splits
+from src.data.preprocessing import create_splits_from_csv, select_glosses, verify_splits
 
 
 def main():

@@ -21,7 +21,6 @@ from torch.utils.data import DataLoader
 from .metrics import (
     calculate_per_signer_accuracy,
     compute_confusion_matrix,
-    compute_macro_f1,
     compute_top_k_accuracy,
     plot_confusion_matrix,
 )

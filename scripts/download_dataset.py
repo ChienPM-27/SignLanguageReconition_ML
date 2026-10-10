@@ -96,7 +96,7 @@ def main():
     # 3. Tải đa luồng
     log_path = P.metrics / "20gloss_download_log.csv"
     t0 = time.time()
-    log_df = download_videos(
+    download_videos(
         src=DEFAULT_CFG["zip_src"],
         pool_df=pool_df,
         out_dir=out_dir,

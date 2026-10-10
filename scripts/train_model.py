@@ -11,9 +11,7 @@ Sử dụng:
     python scripts/train_model.py [--overfit-check] [--baseline-rf] [--num-seeds 3] [--ablation]
 """
 import argparse
-import json
 import sys
-import time
 from pathlib import Path
 
 # Thêm repo root vào sys.path
@@ -134,7 +132,7 @@ def run_random_forest_baseline(train_dataset, test_dataset, num_classes=20):
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
 
-    print(f"\nKết quả Baseline Random Forest:")
+    print("\nKết quả Baseline Random Forest:")
     print(f" - Test Top-1 Accuracy: {acc * 100:.2f}% (Mức ngẫu nhiên: {100 / num_classes:.1f}%)")
     print(f" - Test Macro-F1:       {f1:.4f}")
     if acc > 0.20:

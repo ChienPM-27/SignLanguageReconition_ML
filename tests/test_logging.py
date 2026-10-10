@@ -7,7 +7,6 @@ import logging
 import pytest
 
 from src.utils.logging import (
-    DEFAULT_LOG_LEVEL,
     DEFAULT_LOGGER_NAME,
     VALID_LOG_LEVELS,
     get_logger,
@@ -15,12 +14,13 @@ from src.utils.logging import (
 
 
 def test_get_logger_default() -> None:
-    """Verify get_logger returns logger with DEFAULT_LOGGER_NAME and DEFAULT_LOG_LEVEL."""
+    """Verify get_logger returns logger with DEFAULT_LOGGER_NAME and INFO level."""
     logger = get_logger()
     assert logger.name == DEFAULT_LOGGER_NAME
     assert logger.level == logging.INFO
     assert len(logger.handlers) >= 1
     assert logger.propagate is False
+    assert "INFO" in VALID_LOG_LEVELS
 
 
 def test_get_logger_custom_name_and_level() -> None:

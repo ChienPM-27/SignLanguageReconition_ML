@@ -3,20 +3,36 @@ env:
   name: "auto"                    # Allowed: auto, local, colab, kaggle
   seed: 42                        # Execution seed for reproducibility
   use_drive: false                # In Colab: mount Google Drive if true
-  drive_project_path: "asl-signs" # Persistent directory name under /content/drive/MyDrive/
-  local_root_dir: "."             # Local repository root directory
+  project_dir_name: "asl-signs"   # Directory name under Google Drive (/content/drive/MyDrive/<name>)
+  drive_project_path: "asl-signs" # Alias for project_dir_name
+  local_root: "."                 # Local repository root directory
+  local_root_dir: "."             # Alias for local_root
   log_level: "INFO"               # Allowed: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 data:
-  competition_id: "asl-signs"     # Kaggle competition identifier
-  local_mirror_dir: "data/local_mirror" # Pre-downloaded mirror path to bypass download
+  competition_slug: "asl-signs"   # Competition slug on Kaggle
+  competition_id: "asl-signs"     # Competition identifier
+  train_csv_remote: "train.csv"   # Remote metadata catalog CSV path
+  train_csv_name: "train.csv"     # Local metadata catalog filename
+  parquet_remote_template: "train_landmark_files/{participant_id}/{sequence_id}.parquet"
+  local_mirror_dir: null          # Pre-downloaded mirror path to bypass download (null to disable)
+  cache_dir: "data/cache"         # Download and scratch cache directory
   sample_budget_total_files: 5    # Maximum allowed files to download during sample phases
-  train_csv_name: "train.csv"     # Metadata catalog CSV filename
+  seqs_per_candidate_sign: 2      # Sequences to sample per candidate sign in EDA
+  sample_strategy: "spread_over_participants" # Allowed: "spread_over_participants", "random"
+  sample_seed: 42                 # Sampling seed
+  parquet_hand_types:
+    - "left_hand"
+    - "right_hand"
   landmark_files_dir: "train_landmark_files" # Landmark parquet folder name
 
 eda:
   num_landmark_probe_files: 1     # Parquet files to probe during setup check
   num_expected_landmarks: 543     # Total expected landmarks per frame (468 face + 21 LH + 33 pose + 21 RH)
+  top_n_plot: 20                  # Number of top signs to plot in EDA
+  min_frames: 10                  # Minimum sequence length filter
+  max_frames: 200                 # Maximum sequence length filter
+  min_hand_coverage: 0.1          # Minimum valid hand frame fraction
   expected_columns:
     - "frame"
     - "row_id"
@@ -27,9 +43,32 @@ eda:
     - "z"
 
 selection:
-  output_dir: "data/selection"    # Output directory for data selection/subsampling
+  n_glosses: 20                   # Target number of selected signs
+  n_candidates: 60                # Number of candidate signs to evaluate
+  candidate_prefilter:
+    min_samples: 10               # Minimum samples required per sign
+    min_participants: 5           # Minimum distinct participants required
+    max_participant_dominance: 0.5 # Maximum allowed sample share for any single participant
+  weights:
+    samples: 1.0                  # Weight for sample count
+    participant_coverage: 1.0     # Weight for participant diversity
+    participant_balance: 1.0      # Weight for participant balance (inverse dominance/Gini)
+    hand_coverage: 1.0            # Weight for hand visibility fraction
+    motion_energy: 1.0            # Weight for wrist velocity / path length
+    separability: 1.0             # Weight for centroid distance / distinctiveness
+    handshape_diversity: 1.0      # Weight for handshape variation
+  require_hands: "any"            # Allowed: "any", "dominant_only", "both"
+  exclude_signs: []               # Explicit signs to exclude
+  force_include_signs: []         # Explicit signs to force include
+  diversity_method: "greedy_maxmin" # Allowed: "greedy_maxmin", "top_score"
+  selection_seed: 42              # Seed for selection algorithm
+  selection_dir: "data/selection" # Output directory for selection artifacts
+  output_dir: "data/selection"    # Alias for selection_dir
 
 output:
-  output_dir: "outputs"           # Directory for model and data artifacts
-  report_dir: "reports"           # Directory for analysis and verification reports
+  output_dir: "outputs"           # Directory for general outputs and resolved config
+  reports_dir: "reports"          # Directory for generated reports
+  report_dir: "reports"           # Alias for reports_dir
+  selection_dir: "data/selection" # Directory for gloss selection outputs
   save_resolved_config: true      # Persist resolved config along with artifacts
+  overwrite: true                 # Whether to overwrite existing reports and outputs

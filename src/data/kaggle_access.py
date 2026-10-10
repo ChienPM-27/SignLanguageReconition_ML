@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 import zipfile
 
 ENV_KAGGLE_USERNAME = "KAGGLE_USERNAME"
@@ -21,6 +21,7 @@ ENV_KAGGLE_KEY = "KAGGLE_KEY"
 SOURCE_COLAB_SECRETS = "colab_secrets"
 SOURCE_ENV_VARS = "env_vars"
 SOURCE_KAGGLE_JSON = "kaggle_json"
+SOURCE_COLAB_UPLOAD = "colab_file_upload"
 SOURCE_INTERACTIVE_PROMPT = "interactive_prompt"
 
 STATUS_PRESENT = "present"
@@ -57,7 +58,8 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
         1. Google Colab secrets (google.colab.userdata)
         2. Environment variables (KAGGLE_USERNAME, KAGGLE_KEY)
         3. Local configuration file (~/.kaggle/kaggle.json)
-        4. Interactive terminal prompt (if stdin is a TTY and allow_interactive is True)
+        4. In Google Colab: interactive fallback via google.colab.files.upload() for kaggle.json
+        5. Interactive terminal prompt (if stdin is a TTY and allow_interactive is True)
 
     Args:
         allow_interactive: Whether to prompt interactively if other sources are absent.
@@ -102,20 +104,54 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[Tuple[str
         except (json.JSONDecodeError, OSError, AttributeError):
             pass
 
-    # 4. Interactive prompt fallback (last resort, only when allowed and interactive TTY available)
-    if allow_interactive and sys.stdin.isatty():
-        try:
-            import getpass
-            sys.stdout.write("Enter Kaggle Username: ")
-            sys.stdout.flush()
-            user_input = sys.stdin.readline().strip()
-            if not user_input:
-                return None
-            key_input = getpass.getpass("Enter Kaggle API Key: ").strip()
-            if key_input:
-                return user_input, key_input, SOURCE_INTERACTIVE_PROMPT
-        except Exception:
-            pass
+    # 4. Interactive fallback
+    if allow_interactive:
+        # Colab interactive upload fallback
+        is_colab = (
+            "google.colab" in sys.modules
+            or os.environ.get("COLAB_GPU") is not None
+            or os.environ.get("GCS_READ_CACHE") is not None
+        )
+        if is_colab:
+            try:
+                from google.colab import files
+                sys.stdout.write("Upload your kaggle.json file:\n")
+                sys.stdout.flush()
+                uploaded = files.upload()
+                for fname, content in uploaded.items():
+                    if fname.endswith(KAGGLE_JSON_FILENAME):
+                        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+                        parsed = json.loads(text)
+                        if isinstance(parsed, dict):
+                            u = str(parsed.get("username") or "").strip()
+                            k = str(parsed.get("key") or "").strip()
+                            if u and k:
+                                target_dir = Path.home() / KAGGLE_CONFIG_DIR
+                                target_dir.mkdir(parents=True, exist_ok=True)
+                                target_file = target_dir / KAGGLE_JSON_FILENAME
+                                target_file.write_text(json.dumps({"username": u, "key": k}), encoding="utf-8")
+                                try:
+                                    target_file.chmod(0o600)
+                                except OSError:
+                                    pass
+                                return u, k, SOURCE_COLAB_UPLOAD
+            except Exception:
+                pass
+
+        # Interactive terminal prompt fallback for local TTY
+        if sys.stdin.isatty():
+            try:
+                import getpass
+                sys.stdout.write("Enter Kaggle Username: ")
+                sys.stdout.flush()
+                user_input = sys.stdin.readline().strip()
+                if not user_input:
+                    return None
+                key_input = getpass.getpass("Enter Kaggle API Key: ").strip()
+                if key_input:
+                    return user_input, key_input, SOURCE_INTERACTIVE_PROMPT
+            except Exception:
+                pass
 
     return None
 
@@ -144,8 +180,18 @@ def authenticate_kaggle_api(
         KaggleApi: Authenticated API client instance.
 
     Raises:
+        ImportError: If the 'kaggle' package is not installed.
         KaggleCredentialsNotFoundError: If credentials cannot be found.
+        KaggleRulesNotAcceptedError: If HTTP 403 rules acceptance error occurs.
+        KaggleAccessError: If authentication fails.
     """
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError as exc:
+        raise ImportError(
+            "The 'kaggle' package is not installed. Please run 'pip install kaggle' to enable Kaggle API access."
+        ) from exc
+
     creds = get_kaggle_credentials(allow_interactive=True)
     if creds is None:
         raise KaggleCredentialsNotFoundError(
@@ -161,7 +207,6 @@ def authenticate_kaggle_api(
         logger.info("Authenticating Kaggle API via %s.", source)
 
     try:
-        from kaggle.api.kaggle_api_extended import KaggleApi
         api = KaggleApi()
         api.authenticate()
         return api
@@ -175,7 +220,8 @@ def authenticate_kaggle_api(
         ):
             rules_url = KAGGLE_RULES_URL_TEMPLATE.format(competition_id=DEFAULT_COMPETITION_ID)
             raise KaggleRulesNotAcceptedError(
-                f"HTTP 403 Forbidden during Kaggle authentication. Please verify access at: {rules_url}"
+                f"HTTP 403 Forbidden: You must accept the competition rules on Kaggle before downloading data. "
+                f"Please visit: {rules_url} and click 'I Understand and Accept'."
             ) from exc
         if (
             str(HTTP_STATUS_UNAUTHORIZED) in err_msg

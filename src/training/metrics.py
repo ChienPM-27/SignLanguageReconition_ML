@@ -9,7 +9,7 @@ Bao gồm:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np

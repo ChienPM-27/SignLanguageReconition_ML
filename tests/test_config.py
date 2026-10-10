@@ -159,10 +159,28 @@ def test_empty_key_path_override() -> None:
         load_config(overrides=["=123"])
 
 
-def test_nested_key_override_raises_key_error() -> None:
-    """Verify nested key override targeting non-dict field raises KeyError."""
-    with pytest.raises(KeyError, match="Unknown nested configuration key 'env.seed.foo'"):
-        load_config(overrides=["env.seed.foo=10"])
+def test_nested_dict_override_works() -> None:
+    """Verify nested override on dict field works, e.g. selection.weights.separability=2.0."""
+    cfg = load_config(overrides=["selection.weights.separability=2.0"])
+    assert cfg.selection.weights["separability"] == 2.0
+
+
+def test_list_override_works() -> None:
+    """Verify list override works, e.g. selection.exclude_signs=[a,b]."""
+    cfg = load_config(overrides=["selection.exclude_signs=['sign_a', 'sign_b']"])
+    assert cfg.selection.exclude_signs == ["sign_a", "sign_b"]
+
+
+def test_unknown_inner_dict_key_raises() -> None:
+    """Verify unknown inner key in a dict field raises KeyError."""
+    with pytest.raises(KeyError, match="Unknown weight key 'nonexistent' in selection.weights"):
+        load_config(overrides=["selection.weights.nonexistent=2.0"])
+
+
+def test_override_non_dict_field_with_extra_tokens_raises() -> None:
+    """Verify overriding non-dict field with extra tokens raises TypeError."""
+    with pytest.raises(TypeError, match="Cannot access nested key on non-dict field 'env.seed'"):
+        load_config(overrides=["env.seed.extra=10"])
 
 
 def test_seed_boolean_type_rejection() -> None:
@@ -196,7 +214,7 @@ def test_missing_required_landmark_column_raises_error() -> None:
 
 def test_invalid_yaml_syntax_in_override_raises_value_error() -> None:
     """Verify malformed YAML syntax in CLI override raises ValueError."""
-    with pytest.raises(ValueError, match="Invalid YAML value"):
+    with pytest.raises(ValueError, match="Failed to parse override value"):
         load_config(overrides=["env.seed={unclosed"])
 
 

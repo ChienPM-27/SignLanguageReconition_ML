@@ -17,10 +17,6 @@ def add_jitter(features: np.ndarray, sigma: float = 0.01) -> np.ndarray:
     out = features.copy()
     # Nhiễu vào local shapes [0:126] và global wrists [126:132]
     noise = np.random.normal(0.0, sigma, size=out[:, :132].shape).astype(np.float32)
-    # Không thêm nhiễu vào các frame không có tay
-    mask1 = out[:, 141:142]
-    mask2 = out[:, 142:143]
-    # Broadcast mask tương ứng cho hand 1 và hand 2
     out[:, :132] += noise
     return out
 

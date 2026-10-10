@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional
 
 
 # 20 Gloss mặc định được chọn lọc kỹ từ Phương án A (n_variants == 1, sạch, cử chỉ rõ ràng, loại trừ OK)

@@ -1,16 +1,17 @@
 """Environment and path resolution abstraction for ISLR Phase 0.
 
 Detects runtime platform (local, colab, kaggle) and resolves canonical paths
-for data, cache, output, reports, and repo root without hardcoded downstream assumptions.
+for data, cache, output, reports, selection, repo root, and persistent root.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import os
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.utils.config import Config
@@ -29,7 +30,6 @@ COLAB_ROOT_DIR = "/content"
 COLAB_DRIVE_ROOT = "/content/drive"
 COLAB_DRIVE_MYDRIVE_PREFIX = "/content/drive/MyDrive"
 
-DEFAULT_CACHE_DIR_NAME = "cache"
 DEFAULT_DATA_DIR_NAME = "data"
 
 
@@ -38,20 +38,24 @@ class ResolvedPaths:
     """Canonical resolved paths across runtime environments."""
     env_name: str
     repo_root: Path
+    persistent_root: Path
     data_dir: Path
     cache_dir: Path
     output_dir: Path
     report_dir: Path
+    selection_dir: Path
     is_kaggle_input_readonly: bool = False
 
     def to_dict(self) -> dict:
         return {
             "env_name": self.env_name,
             "repo_root": str(self.repo_root),
+            "persistent_root": str(self.persistent_root),
             "data_dir": str(self.data_dir),
             "cache_dir": str(self.cache_dir),
             "output_dir": str(self.output_dir),
             "report_dir": str(self.report_dir),
+            "selection_dir": str(self.selection_dir),
             "is_kaggle_input_readonly": self.is_kaggle_input_readonly,
         }
 
@@ -79,9 +83,9 @@ def detect_environment() -> str:
         return ENV_COLAB
 
     try:
-        import google.colab  # noqa: F401
+        importlib.import_module("google.colab")
         return ENV_COLAB
-    except ImportError:
+    except (ImportError, ModuleNotFoundError):
         pass
 
     # 3. Default fallback to local environment
@@ -121,6 +125,9 @@ def resolve_paths(
 ) -> ResolvedPaths:
     """Resolve canonical filesystem paths based on environment and configuration.
 
+    Separates repo_root (the cloned codebase location) from persistent_root
+    (where outputs and caches live across disconnections).
+
     Args:
         env_name: Environment identifier ('auto', 'local', 'colab', 'kaggle').
         cfg: Validated Config dataclass instance.
@@ -138,46 +145,63 @@ def resolve_paths(
             f"Invalid environment '{effective_env}'. Must be one of: {sorted(VALID_ENV_NAMES)}"
         )
 
+    # Detect cloned repo root via location of this package, never cwd, never Drive
+    package_repo_root = Path(__file__).resolve().parent.parent.parent
+
     if effective_env == ENV_KAGGLE:
-        repo_root = Path(KAGGLE_WORKING_DIR)
-        data_dir = Path(KAGGLE_INPUT_DIR) / cfg.data.competition_id
+        repo_root = package_repo_root
+        persistent_root = Path(KAGGLE_WORKING_DIR)
+        comp_slug = getattr(cfg.data, "competition_slug", None) or getattr(cfg.data, "competition_id", "asl-signs")
+        data_dir = Path(KAGGLE_INPUT_DIR) / comp_slug
         cache_dir = Path(KAGGLE_TEMP_DIR)
-        output_dir = Path(KAGGLE_WORKING_DIR) / cfg.output.output_dir
-        report_dir = Path(KAGGLE_WORKING_DIR) / cfg.output.report_dir
+        output_dir = persistent_root / cfg.output.output_dir
+        report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
+        selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
         is_readonly = True
 
     elif effective_env == ENV_COLAB:
+        repo_root = package_repo_root
+        proj_name = getattr(cfg.env, "project_dir_name", None) or getattr(cfg.env, "drive_project_path", "asl-signs")
+        clean_proj_name = proj_name.strip().strip("/\\")
+
         if cfg.env.use_drive:
             if create_dirs:
                 _mount_colab_drive_if_needed()
-            clean_project_path = cfg.env.drive_project_path.strip().strip("/\\")
-            persistent_root = Path(COLAB_DRIVE_MYDRIVE_PREFIX) / clean_project_path
-            repo_root = persistent_root
+            persistent_root = Path(COLAB_DRIVE_MYDRIVE_PREFIX) / clean_proj_name
             data_dir = persistent_root / DEFAULT_DATA_DIR_NAME
-            cache_dir = Path(COLAB_ROOT_DIR) / DEFAULT_CACHE_DIR_NAME
+            cache_dir = persistent_root / "cache"
             output_dir = persistent_root / cfg.output.output_dir
-            report_dir = persistent_root / cfg.output.report_dir
+            report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
+            selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
         else:
-            repo_root = Path(COLAB_ROOT_DIR)
-            data_dir = Path(COLAB_ROOT_DIR) / DEFAULT_DATA_DIR_NAME
-            cache_dir = Path(COLAB_ROOT_DIR) / DEFAULT_CACHE_DIR_NAME
-            output_dir = Path(COLAB_ROOT_DIR) / cfg.output.output_dir
-            report_dir = Path(COLAB_ROOT_DIR) / cfg.output.report_dir
+            persistent_root = Path(COLAB_ROOT_DIR)
+            data_dir = persistent_root / DEFAULT_DATA_DIR_NAME
+            cache_dir = persistent_root / "cache"
+            output_dir = persistent_root / cfg.output.output_dir
+            report_dir = persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))
+            selection_dir = persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))
         is_readonly = False
 
     else:  # local
-        repo_root = Path(cfg.env.local_root_dir).resolve()
+        repo_root = package_repo_root
+        conf_local_root = getattr(cfg.env, "local_root", None) or getattr(cfg.env, "local_root_dir", ".")
+        local_path = Path(conf_local_root)
+        persistent_root = local_path.resolve() if local_path.is_absolute() else (repo_root / local_path).resolve()
+
         if cfg.data.local_mirror_dir:
-            data_dir = (repo_root / cfg.data.local_mirror_dir).resolve()
+            mirror_path = Path(cfg.data.local_mirror_dir)
+            data_dir = mirror_path.resolve() if mirror_path.is_absolute() else (persistent_root / mirror_path).resolve()
         else:
-            data_dir = (repo_root / DEFAULT_DATA_DIR_NAME).resolve()
-        cache_dir = (repo_root / DEFAULT_DATA_DIR_NAME / DEFAULT_CACHE_DIR_NAME).resolve()
-        output_dir = (repo_root / cfg.output.output_dir).resolve()
-        report_dir = (repo_root / cfg.output.report_dir).resolve()
+            data_dir = (persistent_root / DEFAULT_DATA_DIR_NAME).resolve()
+
+        cache_dir = (persistent_root / getattr(cfg.data, "cache_dir", "data/cache")).resolve()
+        output_dir = (persistent_root / cfg.output.output_dir).resolve()
+        report_dir = (persistent_root / getattr(cfg.output, "report_dir", getattr(cfg.output, "reports_dir", "reports"))).resolve()
+        selection_dir = (persistent_root / getattr(cfg.selection, "selection_dir", getattr(cfg.selection, "output_dir", "data/selection"))).resolve()
         is_readonly = False
 
     if create_dirs:
-        for p in (output_dir, report_dir, cache_dir):
+        for p in (output_dir, report_dir, cache_dir, selection_dir):
             try:
                 p.mkdir(parents=True, exist_ok=True)
             except (PermissionError, OSError):
@@ -191,9 +215,11 @@ def resolve_paths(
     return ResolvedPaths(
         env_name=effective_env,
         repo_root=repo_root,
+        persistent_root=persistent_root,
         data_dir=data_dir,
         cache_dir=cache_dir,
         output_dir=output_dir,
         report_dir=report_dir,
+        selection_dir=selection_dir,
         is_kaggle_input_readonly=is_readonly,
     )

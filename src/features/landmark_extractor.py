@@ -8,9 +8,8 @@ Quy ước và tính năng đặc biệt:
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import cv2
 import numpy as np
@@ -64,7 +63,6 @@ class MediaPipeHandExtractor:
             return np.zeros((0, 2, 21, 3), dtype=np.float32), np.zeros((0, 2), dtype=bool), {"ok": False}
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
         hands = self._get_hands()
         raw_hands_per_frame = []  # List[List[np.ndarray(21, 3)]]
