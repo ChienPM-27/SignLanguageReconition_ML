@@ -24,6 +24,10 @@ from src.data.kaggle_access import (
     fetch_file,
     get_credential_status,
 )
+from src.data.islr_schema import (
+    generate_schema_markdown_report,
+    verify_schema,
+)
 from src.utils.config import (
     Config,
     parse_cli_args,
@@ -37,6 +41,7 @@ from src.utils.logging import get_logger
 from src.utils.seed import set_seed
 
 REPORT_FILENAME = "setup_check_report.yaml"
+SCHEMA_REPORT_FILENAME = "islr_schema.md"
 CONFIG_OUT_FILENAME = "resolved_config.yaml"
 FIRST_SAMPLE_INDEX = 0
 PATH_COLUMN_NAME = "path"
@@ -348,7 +353,25 @@ def run_setup_check(cfg: Config) -> int:
     logger.info("  Schema Verified:      %s", schema_summary["schema_verified"])
     logger.info("-" * SEPARATOR_LINE_LENGTH)
 
-    # 4. Save artifacts
+    # 4. Generate comprehensive Phase 1 schema report
+    schema_verification = verify_schema(
+        catalog_path=train_csv_path,
+        parquet_paths=[parquet_file_path],
+        nested_path_behavior=f"Canonical nested hierarchy '{sample_remote_path}' verified",
+    )
+    schema_md_content = generate_schema_markdown_report(schema_verification)
+    schema_report_file = paths.report_dir / SCHEMA_REPORT_FILENAME
+    schema_report_file.parent.mkdir(parents=True, exist_ok=True)
+    schema_report_file.write_text(schema_md_content, encoding="utf-8")
+    logger.info("Saved schema verification report to '%s'.", schema_report_file)
+
+    if not schema_verification.all_expectations_met:
+        raise ValueError(
+            f"Schema verification failed with {len(schema_verification.discrepancies)} discrepancies: "
+            f"{schema_verification.discrepancies}"
+        )
+
+    # 5. Save artifacts
     report_data = {
         "setup_check": {
             "status": "SUCCESS",
@@ -361,6 +384,10 @@ def run_setup_check(cfg: Config) -> int:
                 "remote_path": sample_remote_path,
                 "local_path": str(parquet_file_path),
                 "schema_summary": schema_summary,
+            },
+            "schema_verification": {
+                "all_expectations_met": schema_verification.all_expectations_met,
+                "discrepancies": schema_verification.discrepancies,
             },
         }
     }

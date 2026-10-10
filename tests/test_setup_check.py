@@ -268,6 +268,11 @@ def test_run_setup_check_end_to_end(tmp_path: Path) -> None:
     exit_code = run_setup_check(cfg)
     assert exit_code == EXIT_CODE_SUCCESS
     assert (rep_dir / "setup_check_report.yaml").is_file()
+    assert (rep_dir / "islr_schema.md").is_file()
+    schema_report_text = (rep_dir / "islr_schema.md").read_text(encoding="utf-8")
+    assert "ISLR Dataset Schema Verification Report" in schema_report_text
+    assert "Left Hand" in schema_report_text
+    assert "Right Hand" in schema_report_text
     assert (out_dir / "resolved_config.yaml").is_file()
 
 
