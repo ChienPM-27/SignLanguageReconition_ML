@@ -21,3 +21,5 @@ models/checkpoints/*
 # OS
 .DS_Store
 Thumbs.db
+.tmp_build_eda.py
+tests/test_dataset_eda.py
