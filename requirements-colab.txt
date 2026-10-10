@@ -1,0 +1,3 @@
+# Dependencies for Google Colab environment not pre-installed in default runtime
+mediapipe>=0.10.0
+pyarrow>=14.0.0

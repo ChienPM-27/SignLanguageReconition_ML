@@ -23,3 +23,17 @@ models/checkpoints/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Subagents workspace
+.agents/
+
+# Generated reports & outputs (git-ignored except .gitkeep)
+reports/*
+!reports/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Temporary test mirror / cache
+data/local_mirror/
+data/cache/
+

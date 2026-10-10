@@ -84,3 +84,11 @@ py -3.11 -m venv .venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+## 5. Kaggle ISLR Quickstart (Phase 0)
+1. Install dependencies: `pip install -r requirements.txt` (or `requirements-colab.txt` on Colab).
+2. Configure Kaggle credentials via environment variables (`KAGGLE_USERNAME`, `KAGGLE_KEY`) or `~/.kaggle/kaggle.json`.
+3. Verify setup and single-file landmark probe: `python scripts/00_setup_check.py --config configs/islr.yaml`
+4. Apply CLI overrides if desired: `python scripts/00_setup_check.py --set env.log_level=DEBUG`
+5. Inspect resolved config in `outputs/resolved_config.yaml` and summary report in `reports/setup_check_report.yaml`.
+6. Run comprehensive verification test suite: `pytest -q tests/`

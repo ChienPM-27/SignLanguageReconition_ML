@@ -1,0 +1,35 @@
+# Isolated Sign Language Recognition (asl-signs) Phase 0 Configuration
+env:
+  name: "auto"                    # Allowed: auto, local, colab, kaggle
+  seed: 42                        # Execution seed for reproducibility
+  use_drive: false                # In Colab: mount Google Drive if true
+  drive_project_path: "asl-signs" # Persistent directory name under /content/drive/MyDrive/
+  local_root_dir: "."             # Local repository root directory
+  log_level: "INFO"               # Allowed: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+data:
+  competition_id: "asl-signs"     # Kaggle competition identifier
+  local_mirror_dir: "data/local_mirror" # Pre-downloaded mirror path to bypass download
+  sample_budget_total_files: 5    # Maximum allowed files to download during sample phases
+  train_csv_name: "train.csv"     # Metadata catalog CSV filename
+  landmark_files_dir: "train_landmark_files" # Landmark parquet folder name
+
+eda:
+  num_landmark_probe_files: 1     # Parquet files to probe during setup check
+  num_expected_landmarks: 543     # Total expected landmarks per frame (468 face + 21 LH + 33 pose + 21 RH)
+  expected_columns:
+    - "frame"
+    - "row_id"
+    - "type"
+    - "landmark_index"
+    - "x"
+    - "y"
+    - "z"
+
+selection:
+  output_dir: "data/selection"    # Output directory for data selection/subsampling
+
+output:
+  output_dir: "outputs"           # Directory for model and data artifacts
+  report_dir: "reports"           # Directory for analysis and verification reports
+  save_resolved_config: true      # Persist resolved config along with artifacts
