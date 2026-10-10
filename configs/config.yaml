@@ -4,7 +4,7 @@ project:
 
 dataset:
   name: ASL-Citizen
-  num_classes: 10
+  num_classes: 20
 
 input:
   sequence_length: 32
@@ -12,17 +12,25 @@ input:
   num_hands: 2
   landmarks_per_hand: 21
   dimensions: 3
+  # 126 (local shape) + 6 (global wrist) + 3 (relative wrist) + 6 (wrist vel) + 2 (mask) = 143
+  feature_dim: 143
 
 model:
   name: GRU
   hidden_size: 128
   num_layers: 2
   dropout: 0.3
+  ablation_hidden_size: 64
+  ablation_num_layers: 1
 
 training:
   batch_size: 32
   learning_rate: 0.001
-  epochs: 50
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  epochs: 60
+  patience: 15
+  num_seeds: 3
 
 inference:
   confidence_threshold: 0.70

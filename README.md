@@ -10,9 +10,9 @@ Hệ thống nhận diện ngôn ngữ ký hiệu Mỹ (American Sign Language -
 - Dự đoán Top-5 kèm độ tin cậy (confidence score) và cơ chế threshold UNKNOWN.
 
 ## 2. Phạm vi phiên bản đầu tiên
-- **Dataset:** ASL-Citizen (bắt đầu với 10 gloss, sau đó mở rộng 15–20 class).
-- **Trích xuất đặc trưng:** MediaPipe Hands.
-- **Mô hình core:** PyTorch GRU.
+- **Dataset:** ASL-Citizen (20 gloss mục tiêu được lọc kỹ theo tiêu chí cân bằng mẫu và đa dạng người ký).
+- **Trích xuất đặc trưng:** MediaPipe Hands kết hợp Dominant Hand sorting, dời cổ tay, palm scale, tọa độ toàn cục, vận tốc và mask (143 chiều/frame).
+- **Mô hình core:** PyTorch GRU (hidden 128, 2 lớp; kèm ablation hidden 64, 1 lớp).
 - **Inference:** Realtime webcam với state machine (WAITING ⇄ SIGNING).
 
 ## 3. Cấu trúc thư mục

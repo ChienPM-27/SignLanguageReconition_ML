@@ -1,0 +1,22 @@
+{
+  "BACON": 0,
+  "BAR": 1,
+  "BELL": 2,
+  "BOX": 3,
+  "BOY": 4,
+  "CONGRATULATIONS": 5,
+  "COUGH": 6,
+  "DEEP": 7,
+  "EMAIL": 8,
+  "LISTEN": 9,
+  "MANY": 10,
+  "MATH": 11,
+  "OOPS": 12,
+  "OSTRICH": 13,
+  "PAGE": 14,
+  "PASSOUT": 15,
+  "PERFECT": 16,
+  "TOILET": 17,
+  "TRUE": 18,
+  "WEDDING": 19
+}
