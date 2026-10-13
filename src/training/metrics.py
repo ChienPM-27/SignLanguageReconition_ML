@@ -88,10 +88,10 @@ def calculate_per_signer_accuracy(
     test_rows: List[dict],
     y_pred: np.ndarray
 ) -> Dict[str, dict]:
-    """Phân tích độ chính xác theo từng người ký (Signer) trên tập test."""
+    """Phân tích độ chính xác theo từng người ký (Signer / Participant) trên tập test."""
     signer_data = {}
     for row, pred in zip(test_rows, y_pred):
-        s_id = row.get("signer_id", "Unknown")
+        s_id = str(row.get("participant_id") or row.get("signer_id") or "Unknown").strip()
         label = int(row["label"])
         is_correct = int(pred == label)
         if s_id not in signer_data:
@@ -103,8 +103,49 @@ def calculate_per_signer_accuracy(
     for s_id, d in sorted(signer_data.items()):
         acc = float(d["correct"] / d["total"]) if d["total"] > 0 else 0.0
         report[s_id] = {
-            "videos": d["total"],
+            "samples": d["total"],
             "correct": d["correct"],
             "accuracy": round(acc, 4)
         }
     return report
+
+
+def plot_learning_curves(
+    history: Dict[str, list],
+    out_path: str | Path,
+) -> None:
+    """Vẽ và lưu biểu đồ đường cong huấn luyện (Loss & Accuracy) ra file ảnh PNG."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    train_loss = history.get("train_loss", [])
+    val_loss = history.get("val_loss", [])
+    train_acc = history.get("train_acc", [])
+    val_acc = history.get("val_acc", [])
+    epochs = range(1, len(train_loss) + 1)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Loss plot
+    ax1.plot(epochs, train_loss, label="Train Loss", color="tab:blue", lw=2)
+    if val_loss:
+        ax1.plot(epochs, val_loss, label="Val Loss", color="tab:orange", lw=2)
+    ax1.set_xlabel("Epoch", fontweight="bold")
+    ax1.set_ylabel("Loss", fontweight="bold")
+    ax1.set_title("Cross-Entropy Loss Curve", fontweight="bold")
+    ax1.legend()
+    ax1.grid(True, linestyle="--", alpha=0.6)
+
+    # Accuracy plot
+    ax2.plot(epochs, train_acc, label="Train Acc", color="tab:blue", lw=2)
+    if val_acc:
+        ax2.plot(epochs, val_acc, label="Val Acc", color="tab:green", lw=2)
+    ax2.set_xlabel("Epoch", fontweight="bold")
+    ax2.set_ylabel("Accuracy", fontweight="bold")
+    ax2.set_title("Accuracy Curve", fontweight="bold")
+    ax2.legend()
+    ax2.grid(True, linestyle="--", alpha=0.6)
+
+    plt.tight_layout()
+    fig.savefig(str(out_path), dpi=130)
+    plt.close(fig)

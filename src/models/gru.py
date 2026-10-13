@@ -73,6 +73,7 @@ def create_model(
     hidden_size: int = 128,
     num_layers: int = 2,
     dropout: float = 0.3,
+    bidirectional: bool = False,
     is_ablation: bool = False,
 ) -> ASLGRUClassifier:
     """Hàm tiện ích tạo mô hình GRU chuẩn hoặc mô hình ablation nhỏ gọn."""
@@ -83,6 +84,7 @@ def create_model(
             num_layers=1,
             num_classes=num_classes,
             dropout=0.2,
+            bidirectional=bidirectional,
         )
     return ASLGRUClassifier(
         input_size=input_size,
@@ -90,4 +92,5 @@ def create_model(
         num_layers=num_layers,
         num_classes=num_classes,
         dropout=dropout,
+        bidirectional=bidirectional,
     )
