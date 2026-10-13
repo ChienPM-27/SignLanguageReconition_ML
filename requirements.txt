@@ -1,7 +1,7 @@
 numpy
 pandas
-opencv-python
-mediapipe
+pyarrow
+kaggle
 matplotlib
 scikit-learn
 pyyaml
@@ -9,4 +9,3 @@ tqdm
 jupyter
 torch
 torchvision
-remotezip

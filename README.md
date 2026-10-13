@@ -1,94 +1,99 @@
-# ASL Sign Recognition
+# Google Isolated Sign Language Recognition (ISLR)
 
-Hệ thống nhận diện ngôn ngữ ký hiệu Mỹ (American Sign Language - ASL) thời gian thực từ webcam sử dụng MediaPipe Hands và mô hình GRU.
+Hệ thống nhận diện ngôn ngữ ký hiệu Mỹ (Isolated Sign Language Recognition - ISLR) 20 gloss dựa trên dataset Kaggle `asl-signs` (MediaPipe Holistic landmarks trích xuất sẵn trong định dạng Parquet) và mô hình GRU (Gated Recurrent Unit).
 
-## 1. Mục tiêu dự án
-- Xây dựng pipeline nhận diện ASL từ video/webcam.
-- Đầu vào: Hand landmarks (2 tay, 21 landmarks/tay, tọa độ 3D x, y, z).
-- Mô hình nhận diện chuỗi thời gian: GRU (Gated Recurrent Unit).
-- Tự động phân đoạn chuyển động (Automatic Motion Segmentation) bằng rule-based motion detector và rolling buffer.
-- Dự đoán Top-5 kèm độ tin cậy (confidence score) và cơ chế threshold UNKNOWN.
+## 1. Mục tiêu và Kiến trúc
+- **Dataset:** Kaggle Competition `asl-signs` (543 landmarks/frame: face, pose, left_hand, right_hand; frame thiếu landmark = NaN).
+- **Mục tiêu:** Nhận diện 20 gloss mục tiêu với phân chia người ký độc lập (Signer-Independent split).
+- **Trích xuất đặc trưng & Tiền xử lý:**
+  - Lọc bỏ frame không có tay hợp lệ (Trim idle frames).
+  - Xác định dominant hand theo phân tích dữ liệu thực tế.
+  - Nội suy các frame mất tay ngắn hạn (Interpolation), điền 0 và đặt mask.
+  - Resample chuỗi thời gian về độ dài cố định $T=32$ frames.
+  - Chuẩn hóa vector đặc trưng theo cấu hình config.
+- **Mô hình core:** PyTorch GRU Classifier (2 lớp, hidden 128, dropout 0.3) với cấu hình hoàn toàn điều khiển bởi config.
+- **Môi trường thực thi:** Tự động phát hiện và tương thích tối đa trên Google Colab, Kaggle Notebook và Local.
 
-## 2. Phạm vi phiên bản đầu tiên
-- **Dataset:** ASL-Citizen (20 gloss mục tiêu được lọc kỹ theo tiêu chí cân bằng mẫu và đa dạng người ký).
-- **Trích xuất đặc trưng:** MediaPipe Hands kết hợp Dominant Hand sorting, dời cổ tay, palm scale, tọa độ toàn cục, vận tốc và mask (143 chiều/frame).
-- **Mô hình core:** PyTorch GRU (hidden 128, 2 lớp; kèm ablation hidden 64, 1 lớp).
-- **Inference:** Realtime webcam với state machine (WAITING ⇄ SIGNING).
-
-## 3. Cấu trúc thư mục
+## 2. Cấu trúc thư mục
 ```
 SignLanguageReconition_ML/
 ├── README.md
 ├── requirements.txt
-├── .gitignore
+├── requirements-inference.txt
+├── requirements-colab.txt
+├── pytest.ini
 ├── configs/
-│   └── config.yaml
+│   └── islr.yaml               # Canonical configuration file (Single Source of Truth)
 ├── data/
-│   ├── raw/
-│   │   ├── videos/
-│   │   └── metadata/
-│   ├── processed/
-│   ├── landmarks/
-│   └── splits/
-│       ├── train.csv
-│       ├── val.csv
-│       └── test.csv
+│   ├── cache/                  # Thư mục cache dữ liệu và parquet tải về
+│   ├── selection/              # Báo cáo và danh sách 20 gloss được lựa chọn
+│   └── splits/                 # File phân chia train/val/test signer-independent
 ├── notebooks/
-│   ├── 01_dataset_exploration.ipynb
-│   ├── 02_landmark_extraction.ipynb
-│   └── 03_model_experiment.ipynb
+│   └── islr_phase2.ipynb       # Notebook mỏng cho Colab / Kaggle
+├── scripts/
+│   ├── 00_setup_check.py       # Kiểm tra môi trường và schema parquet
+│   ├── 10_prepare_data.py      # Pipeline dữ liệu: Selection, Download, Preprocess, Split
+│   └── 20_train.py             # Huấn luyện mô hình GRU & Random Forest baseline
 ├── src/
 │   ├── data/
-│   │   ├── dataset.py
-│   │   ├── preprocessing.py
-│   │   └── augmentation.py
+│   │   ├── kaggle_access.py    # Tải dữ liệu an toàn từ Kaggle API với bộ nhớ đệm
+│   │   ├── islr_schema.py      # Kiểm tra và phân tích schema Parquet
+│   │   ├── dataset.py          # PyTorch Dataset đọc .npy từ manifest
+│   │   └── augmentation.py     # Data augmentation cho tọa độ và đặc trưng
 │   ├── features/
-│   │   ├── landmark_extractor.py
-│   │   └── normalization.py
-│   ├── segmentation/
-│   │   ├── motion_detector.py
-│   │   ├── buffer.py
-│   │   └── state_machine.py
+│   │   ├── normalization.py    # Chuẩn hóa landmarks và tính toán feature vector
+│   │   └── landmark_extractor.py # Trích xuất landmark MediaPipe (dùng cho Phase 3)
 │   ├── models/
-│   │   └── gru.py
+│   │   └── gru.py              # Mô hình ASLGRUClassifier
 │   ├── training/
-│   │   ├── train.py
-│   │   ├── evaluate.py
-│   │   └── metrics.py
-│   ├── inference/
-│   │   └── realtime.py
+│   │   ├── train.py            # Huấn luyện mô hình với Early Stopping & Scheduler
+│   │   ├── evaluate.py         # Đánh giá Top-1, Top-3, Macro-F1 & Confusion Matrix
+│   │   └── metrics.py          # Hàm tính độ chính xác và F1-score
 │   └── utils/
-│       ├── config.py
-│       └── seed.py
-├── models/
-│   └── checkpoints/
-├── scripts/
-│   ├── download_dataset.py
-│   ├── extract_landmarks.py
-│   ├── create_splits.py
-│   └── train_model.py
-└── app/
-    └── main.py
+│       ├── config.py           # Strictly typed config dataclasses & CLI override (--set)
+│       ├── env.py              # Tự động nhận diện môi trường & resolve canonical paths
+│       ├── logging.py          # Module ghi log chuẩn hóa
+│       └── seed.py             # Cố định random seed tái lập kết quả
+└── tests/                      # Bộ kiểm thử đơn vị hoàn toàn tự trị
 ```
 
-## 4. Hướng dẫn cài đặt môi trường
-Khuyến nghị dùng **Python 3.11**:
+## 3. Cài đặt và Chạy kiểm thử
 ```bash
-# Tạo môi trường ảo
-py -3.11 -m venv .venv
-
-# Kích hoạt môi trường (Windows PowerShell)
-.venv\Scripts\Activate.ps1
-
-# Cài đặt thư viện
-pip install --upgrade pip
+# Cài đặt môi trường
 pip install -r requirements.txt
+
+# Chạy toàn bộ test suite (không cần kết nối mạng)
+pytest -q tests/
 ```
 
-## 5. Kaggle ISLR Quickstart (Phase 0)
-1. Install dependencies: `pip install -r requirements.txt` (or `requirements-colab.txt` on Colab).
-2. Configure Kaggle credentials via environment variables (`KAGGLE_USERNAME`, `KAGGLE_KEY`) or `~/.kaggle/kaggle.json`.
-3. Verify setup and single-file landmark probe: `python scripts/00_setup_check.py --config configs/islr.yaml`
-4. Apply CLI overrides if desired: `python scripts/00_setup_check.py --set env.log_level=DEBUG`
-5. Inspect resolved config in `outputs/resolved_config.yaml` and summary report in `reports/setup_check_report.yaml`.
-6. Run comprehensive verification test suite: `pytest -q tests/`
+## 4. Quy trình thực thi (Config-Driven Workflow)
+Mọi thiết lập và tham số điều chỉnh được quản lý tại `configs/islr.yaml` và hỗ trợ ghi đè qua `--set key=value`:
+
+1. **Kiểm tra môi trường và kiểm định Schema:**
+   ```bash
+   python scripts/00_setup_check.py --config configs/islr.yaml
+   ```
+
+2. **Chuẩn bị dữ liệu (Lựa chọn gloss, tải file, tiền xử lý, chia split):**
+   ```bash
+   # Chạy toàn bộ pipeline chuẩn bị dữ liệu
+   python scripts/10_prepare_data.py --config configs/islr.yaml
+
+   # Hoặc chạy từng giai đoạn riêng biệt:
+   python scripts/10_prepare_data.py --config configs/islr.yaml --stage selection
+   python scripts/10_prepare_data.py --config configs/islr.yaml --stage download
+   python scripts/10_prepare_data.py --config configs/islr.yaml --stage preprocess
+   python scripts/10_prepare_data.py --config configs/islr.yaml --stage split
+   ```
+
+3. **Huấn luyện mô hình:**
+   ```bash
+   # Huấn luyện chính thức theo config
+   python scripts/20_train.py --config configs/islr.yaml
+
+   # Chế độ kiểm tra quá khớp (Sanity check)
+   python scripts/20_train.py --config configs/islr.yaml --overfit-check
+
+   # Chế độ baseline Random Forest
+   python scripts/20_train.py --config configs/islr.yaml --baseline-rf
+   ```
