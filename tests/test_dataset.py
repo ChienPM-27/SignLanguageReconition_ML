@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 import numpy as np
 import pytest
@@ -21,6 +22,13 @@ from src.data.augmentation import (
     horizontal_flip,
     random_rotate_2d,
     time_stretch,
+)
+from src.data.augmentation_gpu import (
+    apply_augmentation_batch,
+    batch_add_jitter,
+    batch_horizontal_flip,
+    batch_random_rotate_2d,
+    batch_time_stretch,
 )
 from src.data.dataset import ISRLandmarkDataset, create_dataloader
 
@@ -248,4 +256,139 @@ def test_preload_corrupted_file_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Feature array must be 2D"):
         ISRLandmarkDataset(split_csv=split_csv, preload="ram", sequence_length=32, feature_dim=143)
+
+
+def test_batch_augmentation_invariants() -> None:
+    # Shape, dtype, non-inplace, finite
+    B, T, D = 4, 32, 143
+    x = torch.randn(B, T, D, dtype=torch.float32)
+    x_copy = x.clone()
+
+    aug_cfg = {
+        "flip": {"enabled": True, "prob": 1.0, "swap_hands": False},
+        "jitter": {"enabled": True, "prob": 1.0, "sigma": 0.01},
+        "rotate": {"enabled": True, "prob": 1.0, "max_angle_deg": 5.0},
+        "time_stretch": {"enabled": True, "prob": 1.0, "max_stretch": 0.1},
+    }
+
+    gen = torch.Generator().manual_seed(42)
+    out = apply_augmentation_batch(x, cfg=aug_cfg, generator=gen)
+
+    # 1. Output properties
+    assert out.shape == x.shape
+    assert out.dtype == x.dtype
+    assert torch.isfinite(out).all()
+
+    # 2. Input tensor NOT modified in-place
+    assert torch.equal(x, x_copy)
+
+    # 3. Seed reproducibility
+    gen1 = torch.Generator().manual_seed(123)
+    gen2 = torch.Generator().manual_seed(123)
+    out1 = apply_augmentation_batch(x, cfg=aug_cfg, generator=gen1)
+    out2 = apply_augmentation_batch(x, cfg=aug_cfg, generator=gen2)
+    assert torch.allclose(out1, out2)
+
+    # 4. prob = 0.0 returns exact identical tensor
+    zero_cfg = {
+        "flip": {"enabled": True, "prob": 0.0},
+        "jitter": {"enabled": True, "prob": 0.0},
+        "rotate": {"enabled": True, "prob": 0.0},
+        "time_stretch": {"enabled": True, "prob": 0.0},
+    }
+    assert torch.equal(apply_augmentation_batch(x, cfg=zero_cfg), x)
+
+
+def test_batch_flip_matches_numpy() -> None:
+    np.random.seed(99)
+    # Test on both 143 and 160 dims
+    for D in [143, 160]:
+        arr_np = np.random.randn(32, D).astype(np.float32)
+        x_tensor = torch.from_numpy(arr_np).unsqueeze(0)  # (1, 32, D)
+
+        for swap in [False, True]:
+            expected_np = horizontal_flip(arr_np, swap_hands=swap)
+            actual_torch = batch_horizontal_flip(x_tensor, swap_hands=swap)
+            actual_np = actual_torch.squeeze(0).cpu().numpy()
+
+            assert np.allclose(actual_np, expected_np, atol=1e-6)
+
+
+def test_batch_rotate_matches_numpy() -> None:
+    # Use fixed angle to test exact numeric match with 2D rotation formula
+    angle = 7.5
+    for D in [143, 160]:
+        arr_np = np.random.randn(32, D).astype(np.float32)
+        x_tensor = torch.from_numpy(arr_np).unsqueeze(0)  # (1, 32, D)
+
+        # Compute manual numpy rotation with angle 7.5 deg
+        rad = math.radians(angle)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        rot_mat = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float32)
+
+        expected_np = arr_np.copy()
+        shapes = expected_np[:, :126].reshape(32, 2, 21, 3)
+        xy = shapes[:, :, :, :2].reshape(-1, 2)
+        shapes[:, :, :, :2] = np.dot(xy, rot_mat.T).reshape(32, 2, 21, 2)
+        expected_np[:, :126] = shapes.reshape(32, 126)
+
+        wrists = expected_np[:, 126:132].reshape(32, 2, 3)
+        w_xy = wrists[:, :, :2].reshape(-1, 2) - 0.5
+        wrists[:, :, :2] = (np.dot(w_xy, rot_mat.T) + 0.5).reshape(32, 2, 2)
+        expected_np[:, 126:132] = wrists.reshape(32, 6)
+
+        actual_torch = batch_random_rotate_2d(x_tensor, angles_deg=torch.tensor([angle]))
+        actual_np = actual_torch.squeeze(0).cpu().numpy()
+
+        assert np.allclose(actual_np, expected_np, atol=1e-6)
+
+
+def test_batch_jitter_dimension_boundary() -> None:
+    # Jitter must ONLY touch min(132, D) dimensions
+    x = torch.zeros(2, 32, 160, dtype=torch.float32)
+    out = batch_add_jitter(x, sigma=0.05)
+
+    # First 132 dims have noise
+    assert not torch.equal(out[:, :, :132], x[:, :, :132])
+    # Dims 132..160 must remain strictly 0
+    assert torch.equal(out[:, :, 132:], x[:, :, 132:])
+
+
+def test_batch_time_stretch_identity() -> None:
+    x = torch.randn(2, 32, 143, dtype=torch.float32)
+    # rate = 1.0 must be the exact identity mapping
+    out = batch_time_stretch(x, rates=torch.tensor([1.0, 1.0]))
+    assert torch.allclose(out, x, atol=1e-6)
+
+
+def test_device_loader_with_batch_augmentation(tmp_path: Path) -> None:
+    split_csv, _ = _create_synthetic_split_dataset(tmp_path, num_samples=4, num_classes=2)
+
+    aug_cfg = {
+        "jitter": {"enabled": True, "prob": 1.0, "sigma": 0.05},
+    }
+
+    # Train dataset with augmentation
+    ds_train = ISRLandmarkDataset(
+        split_csv=split_csv,
+        is_train=True,
+        augment=True,
+        augmentation_config=aug_cfg,
+        preload="device",
+        device="cpu",
+    )
+    # In device mode, per-sample augment is False, augment_on_device is True
+    assert ds_train.augment is False
+    assert ds_train.augment_on_device is True
+
+    loader = create_dataloader(ds_train, batch_size=4, shuffle=False)
+    batch_x, batch_y = next(iter(loader))
+
+    # Preloaded feature should remain clean
+    raw_x = ds_train.preloaded_features
+    assert not torch.equal(batch_x, raw_x)
+    assert not torch.allclose(batch_x[:, :, :132], raw_x[:, :, :132])
+    # The non-jittered dims remain identical
+    assert torch.equal(batch_x[:, :, 132:], raw_x[:, :, 132:])
+
 

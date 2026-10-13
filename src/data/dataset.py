@@ -283,6 +283,8 @@ def create_dataloader(
 ) -> Union[DataLoader, DeviceDataLoader]:
     """Tạo DataLoader tiện ích cho ISLR, tự động hỗ trợ DeviceDataLoader khi preload='device'."""
     if getattr(dataset, "preload", "none") == "device":
+        from src.data.augmentation_gpu import apply_augmentation_batch
+
         return DeviceDataLoader(
             dataset=dataset,
             batch_size=batch_size,
@@ -292,6 +294,7 @@ def create_dataloader(
             generator=generator,
             augment=getattr(dataset, "augment_on_device", False),
             augmentation_config=getattr(dataset, "augmentation_config", None),
+            augmentation_fn=apply_augmentation_batch,
         )
 
     if pin_memory is None:
