@@ -13,6 +13,10 @@ data:
   parquet_remote_template: "train_landmark_files/{participant_id}/{sequence_id}.parquet"
   local_mirror_dir: null          # Pre-downloaded mirror path to bypass download (null to disable)
   cache_dir: "data/cache"         # Download and scratch cache directory
+  download_budget_total_files: null # Total download budget cap for target sequences (null for unlimited)
+  max_files_per_gloss: null       # Sequence cap per selected sign (null for unlimited; used for smoke tests)
+  num_download_workers: 4         # Concurrent download workers
+  retry: 3                        # Max retry attempts per file on network failure
   sample_budget_total_files: 5    # Maximum allowed files to download during sample phases
   seqs_per_candidate_sign: 2      # Sequences to sample per candidate sign in EDA
   sample_strategy: "spread_over_participants" # Allowed: "spread_over_participants", "random"

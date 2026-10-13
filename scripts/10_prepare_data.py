@@ -16,6 +16,7 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from src.data.download import download_target_gloss_data
 from src.data.selection import select_20_glosses
 from src.utils.config import DEFAULT_CONFIG_PATH, load_config, save_config
 from src.utils.env import detect_env, resolve_paths
@@ -73,10 +74,11 @@ def run_pipeline(
         selected_glosses, glosses_csv, report_path = select_20_glosses(cfg=cfg, paths=paths)
         logger.info(f"Selection complete: {len(selected_glosses)} glosses -> {glosses_csv}")
 
-    # Stage: Download (to be connected in Step 2)
+    # Stage: Download
     if stage in ("download", "all"):
-        if stage == "download":
-            logger.info("Download stage requested.")
+        logger.info("Executing Stage: Download (Target gloss parquets)")
+        download_manifest, download_records = download_target_gloss_data(cfg=cfg, paths=paths)
+        logger.info(f"Download complete: {len(download_records)} records -> {download_manifest}")
 
     # Stage: Preprocess (to be connected in Step 3)
     if stage in ("preprocess", "all"):

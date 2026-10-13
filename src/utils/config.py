@@ -95,6 +95,10 @@ class DataConfig:
     parquet_remote_template: str = "train_landmark_files/{participant_id}/{sequence_id}.parquet"
     local_mirror_dir: Optional[str] = None
     cache_dir: str = "data/cache"
+    download_budget_total_files: Optional[int] = None
+    max_files_per_gloss: Optional[int] = None
+    num_download_workers: int = 4
+    retry: int = 3
     sample_budget_total_files: int = 5
     seqs_per_candidate_sign: int = 2
     sample_strategy: str = "spread_over_participants"
@@ -114,6 +118,16 @@ class DataConfig:
                 raise ValueError("data.local_mirror_dir must be None or a non-empty string.")
         if not isinstance(self.cache_dir, str) or not self.cache_dir.strip():
             raise ValueError("data.cache_dir must be a non-empty string.")
+        if self.download_budget_total_files is not None:
+            if type(self.download_budget_total_files) is bool or not isinstance(self.download_budget_total_files, int) or self.download_budget_total_files < 1:
+                raise ValueError("data.download_budget_total_files must be None or an integer >= 1.")
+        if self.max_files_per_gloss is not None:
+            if type(self.max_files_per_gloss) is bool or not isinstance(self.max_files_per_gloss, int) or self.max_files_per_gloss < 1:
+                raise ValueError("data.max_files_per_gloss must be None or an integer >= 1.")
+        if type(self.num_download_workers) is bool or not isinstance(self.num_download_workers, int) or self.num_download_workers < 1:
+            raise ValueError("data.num_download_workers must be an integer >= 1.")
+        if type(self.retry) is bool or not isinstance(self.retry, int) or self.retry < 0:
+            raise ValueError("data.retry must be an integer >= 0.")
         if type(self.sample_budget_total_files) is bool or not isinstance(self.sample_budget_total_files, int):
             raise TypeError(
                 f"data.sample_budget_total_files must be an integer, got {type(self.sample_budget_total_files).__name__}"
