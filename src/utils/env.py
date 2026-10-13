@@ -92,6 +92,9 @@ def detect_environment() -> str:
     return ENV_LOCAL
 
 
+detect_env = detect_environment
+
+
 def _mount_colab_drive_if_needed(mount_point: str = COLAB_DRIVE_ROOT) -> bool:
     """Mount Google Drive in Colab if not already mounted.
 
