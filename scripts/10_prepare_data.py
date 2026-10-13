@@ -19,6 +19,7 @@ if str(repo_root) not in sys.path:
 from src.data.download import download_target_gloss_data
 from src.data.preprocess import run_preprocessing
 from src.data.selection import select_20_glosses
+from src.data.split import create_signer_splits
 from src.utils.config import DEFAULT_CONFIG_PATH, load_config, save_config
 from src.utils.env import detect_env, resolve_paths
 from src.utils.logging import get_logger
@@ -87,10 +88,11 @@ def run_pipeline(
         feat_manifest, excluded_csv, prep_report = run_preprocessing(cfg=cfg, paths=paths)
         logger.info(f"Preprocessing complete: manifest -> {feat_manifest}, report -> {prep_report}")
 
-    # Stage: Split (to be connected in Step 4)
+    # Stage: Split
     if stage in ("split", "all"):
-        if stage == "split":
-            logger.info("Split stage requested.")
+        logger.info("Executing Stage: Split (Signer-independent holdout/kfold)")
+        split_files, split_report = create_signer_splits(cfg=cfg, paths=paths)
+        logger.info(f"Split complete: files -> {list(split_files.keys())}, report -> {split_report}")
 
     # Save resolved config
     if cfg.output.save_resolved_config:

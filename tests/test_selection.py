@@ -194,6 +194,7 @@ def test_cli_prepare_data_selection_stage(tmp_path: Path) -> None:
     _create_synthetic_catalog(catalog_path, mirror_dir, num_signs=15)
 
     overrides = [
+        f"env.local_root={tmp_path}",
         f"data.local_mirror_dir={mirror_dir}",
         "selection.n_glosses=10",
         "selection.n_candidates=15",
