@@ -53,8 +53,14 @@ def random_rotate_2d(features: np.ndarray, max_angle_deg: float = 8.0) -> np.nda
     return out
 
 
-def horizontal_flip(features: np.ndarray) -> np.ndarray:
-    """Lật gương quanh trục x=0.5 và hoán đổi tay 1 <-> tay 2."""
+def horizontal_flip(features: np.ndarray, swap_hands: bool = False) -> np.ndarray:
+    """Lật gương quanh trục x.
+
+    Args:
+        features: Mảng shape (T, D).
+        swap_hands: Nếu False, chỉ lật trục x và giữ nguyên slot 0 là tay trội.
+                    Nếu True, hoán đổi slot tay 0 <-> tay 1.
+    """
     out = features.copy()
     T = len(out)
     D = out.shape[1]
@@ -63,37 +69,43 @@ def horizontal_flip(features: np.ndarray) -> np.ndarray:
     if D >= 126:
         shapes = out[:, :126].reshape(T, 2, 21, 3)
         shapes[:, :, :, 0] = -shapes[:, :, :, 0]
-        shapes_flipped = shapes[:, [1, 0], :, :]
-        out[:, :126] = shapes_flipped.reshape(T, 126)
+        if swap_hands:
+            shapes = shapes[:, [1, 0], :, :]
+        out[:, :126] = shapes.reshape(T, 126)
 
     # 2. Global Wrists (6 dims: 3 per hand)
     if D >= 132:
         wrists = out[:, 126:132].reshape(T, 2, 3)
         wrists[:, :, 0] = 1.0 - wrists[:, :, 0]
-        wrists_flipped = wrists[:, [1, 0], :]
-        out[:, 126:132] = wrists_flipped.reshape(T, 6)
+        if swap_hands:
+            wrists = wrists[:, [1, 0], :]
+        out[:, 126:132] = wrists.reshape(T, 6)
 
-    # 3. Relative Wrist Vector: rel = wrist_1 - wrist_2
+    # 3. Relative Wrist Vector: rel = wrist_0 - wrist_1
     if D >= 135:
-        out[:, 132:135] = -out[:, 132:135]
-        out[:, 132] = -out[:, 132]
+        if swap_hands:
+            out[:, 132:135] = -out[:, 132:135]
+            out[:, 132] = -out[:, 132]
+        else:
+            out[:, 132] = -out[:, 132]
 
     # 4. Wrist Velocities (6 dims: 3 per hand)
     if D >= 141:
         vel = out[:, 135:141].reshape(T, 2, 3)
         vel[:, :, 0] = -vel[:, :, 0]
-        vel_flipped = vel[:, [1, 0], :]
-        out[:, 135:141] = vel_flipped.reshape(T, 6)
+        if swap_hands:
+            vel = vel[:, [1, 0], :]
+        out[:, 135:141] = vel.reshape(T, 6)
 
     # 5. Mask (2 dims)
     if D >= 143:
-        out[:, 141:143] = out[:, [142, 141]]
+        if swap_hands:
+            out[:, 141:143] = out[:, [142, 141]]
 
     # 6. Pose shoulder & elbow points if present (12 coords: left/right shoulder, left/right elbow)
     if D >= 155:
         pose = out[:, 143:155].reshape(T, 4, 3)
         pose[:, :, 0] = 1.0 - pose[:, :, 0]
-        # Swap left shoulder (0) with right shoulder (1), and left elbow (2) with right elbow (3)
         pose_flipped = pose[:, [1, 0, 3, 2], :]
         out[:, 143:155] = pose_flipped.reshape(T, 12)
 
@@ -140,8 +152,9 @@ def apply_augmentation(features: np.ndarray, cfg: Any = None) -> np.ndarray:
     # 1. Flip
     if _get_aug_param(flip_cfg, "enabled", False):
         prob = _get_aug_param(flip_cfg, "prob", 0.5)
+        swap_hands = _get_aug_param(flip_cfg, "swap_hands", False)
         if np.random.rand() < prob:
-            out = horizontal_flip(out)
+            out = horizontal_flip(out, swap_hands=swap_hands)
 
     # 2. Rotate
     if _get_aug_param(rotate_cfg, "enabled", False):

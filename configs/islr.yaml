@@ -94,8 +94,9 @@ split:
 
 augmentation:
   flip:
-    enabled: true
+    enabled: false
     prob: 0.5
+    swap_hands: false
   jitter:
     enabled: true
     prob: 0.5

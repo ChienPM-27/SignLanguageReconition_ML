@@ -371,7 +371,7 @@ class SplitConfig:
 
 @dataclass
 class AugmentationConfig:
-    flip: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5})
+    flip: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "prob": 0.5, "swap_hands": False})
     jitter: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "sigma": 0.01})
     rotate: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "max_angle_deg": 8.0})
     time_stretch: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "prob": 0.3, "max_stretch": 0.2})

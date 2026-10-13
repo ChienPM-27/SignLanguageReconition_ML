@@ -129,9 +129,25 @@ def test_augmentation_functions() -> None:
     rotated = random_rotate_2d(arr, max_angle_deg=10.0)
     assert rotated.shape == arr.shape
 
-    # Flip
-    flipped = horizontal_flip(arr)
-    assert flipped.shape == arr.shape
+    # Flip without hand swapping (swap_hands=False, default)
+    flipped_no_swap = horizontal_flip(arr, swap_hands=False)
+    assert flipped_no_swap.shape == arr.shape
+    # Mask is NOT swapped
+    assert np.allclose(flipped_no_swap[:, 141:143], arr[:, 141:143])
+    # Slot 0 local x is inverted in place
+    orig_s0_x = arr[:, :126].reshape(32, 2, 21, 3)[:, 0, :, 0]
+    flip_s0_x = flipped_no_swap[:, :126].reshape(32, 2, 21, 3)[:, 0, :, 0]
+    assert np.allclose(flip_s0_x, -orig_s0_x)
+
+    # Flip with hand swapping (swap_hands=True)
+    flipped_swap = horizontal_flip(arr, swap_hands=True)
+    assert flipped_swap.shape == arr.shape
+    # Mask IS swapped
+    assert np.allclose(flipped_swap[:, 141:143], arr[:, [142, 141]])
+    # Slot 0 gets inverted Slot 1
+    orig_s1_x = arr[:, :126].reshape(32, 2, 21, 3)[:, 1, :, 0]
+    flip_swap_s0_x = flipped_swap[:, :126].reshape(32, 2, 21, 3)[:, 0, :, 0]
+    assert np.allclose(flip_swap_s0_x, -orig_s1_x)
 
     # Time stretch
     stretched = time_stretch(arr, max_stretch=0.2)
@@ -139,7 +155,7 @@ def test_augmentation_functions() -> None:
 
     # Config-driven apply_augmentation
     aug_cfg = {
-        "flip": {"enabled": True, "prob": 1.0},
+        "flip": {"enabled": True, "prob": 1.0, "swap_hands": False},
         "jitter": {"enabled": True, "prob": 1.0, "sigma": 0.01},
         "rotate": {"enabled": True, "prob": 1.0, "max_angle_deg": 5.0},
         "time_stretch": {"enabled": True, "prob": 1.0, "max_stretch": 0.1},
