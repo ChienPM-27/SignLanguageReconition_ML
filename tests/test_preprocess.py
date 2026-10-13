@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import importlib
+import json
 from pathlib import Path
 import numpy as np
 
@@ -214,3 +215,91 @@ def test_cli_prepare_data_preprocess_stage(tmp_path: Path) -> None:
     assert ret == 0
     assert (tmp_path / "cache" / "features" / "manifest.csv").is_file()
     assert (tmp_path / "reports" / "preprocess_report.md").is_file()
+
+
+def test_preprocess_cache_invalidation_and_resume(tmp_path: Path) -> None:
+    mirror_dir = tmp_path / "mirror"
+    catalog_path = mirror_dir / "train.csv"
+    _create_synthetic_catalog(catalog_path, mirror_dir, num_signs=2, samples_per_sign=3)
+
+    selection_dir = tmp_path / "selection"
+    selection_dir.mkdir(parents=True)
+    glosses_csv = selection_dir / "glosses.csv"
+    glosses_csv.write_text(
+        "gloss,label,n_samples,n_participants,max_dominance,hand_coverage,motion_energy,composite_score\n"
+        "sign_00,0,3,3,0.33,1.0,0.1,0.9\n"
+        "sign_01,1,3,3,0.33,1.0,0.1,0.85\n",
+        encoding="utf-8",
+    )
+
+    cache_dir = tmp_path / "cache"
+    reports_dir = tmp_path / "reports"
+    out_dir = tmp_path / "out"
+
+    base_overrides = [
+        f"env.local_root={tmp_path}",
+        f"data.local_mirror_dir={mirror_dir}",
+        f"data.cache_dir={cache_dir}",
+        f"output.selection_dir={selection_dir}",
+        f"output.output_dir={out_dir}",
+        f"output.report_dir={reports_dir}",
+        "preprocess.sequence_length=32",
+        "preprocess.pad_frames_around=2",
+        "preprocess.trim_no_hand=true",
+        "features.set=hands",
+    ]
+
+    # Run 1: Initial preprocessing
+    cfg1 = load_config(overrides=base_overrides)
+    paths1 = resolve_paths(ENV_LOCAL, cfg1, create_dirs=True)
+    manifest_csv, _, _ = run_preprocessing(cfg=cfg1, paths=paths1)
+
+    meta_file = cache_dir / "features" / "preprocess_meta.json"
+    assert meta_file.is_file()
+    meta1 = json.loads(meta_file.read_text(encoding="utf-8"))
+    hash1 = meta1["config_hash"]
+
+    # Record real n_valid_frames & hand_coverage from first run
+    with open(manifest_csv, mode="r", encoding="utf-8") as f:
+        rows1 = list(csv.DictReader(f))
+    assert len(rows1) == 6
+    records1 = {r["sequence_id"]: (r["n_valid_frames"], r["hand_coverage"]) for r in rows1}
+
+    # Run 2: Exact same config -> should resume and preserve n_valid_frames & hand_coverage
+    cfg2 = load_config(overrides=base_overrides)
+    paths2 = resolve_paths(ENV_LOCAL, cfg2, create_dirs=True)
+    manifest_csv2, _, _ = run_preprocessing(cfg=cfg2, paths=paths2)
+
+    meta2 = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta2["config_hash"] == hash1
+
+    with open(manifest_csv2, mode="r", encoding="utf-8") as f:
+        rows2 = list(csv.DictReader(f))
+    assert len(rows2) == 6
+    for r in rows2:
+        sid = r["sequence_id"]
+        # Must retain original valid frames and coverage, not dummy 32 / 1.0
+        assert (r["n_valid_frames"], r["hand_coverage"]) == records1[sid]
+
+    # Run 3: Change pad_frames_around -> hash must change and cache must be recomputed
+    overrides_new_pad = list(base_overrides)
+    overrides_new_pad[base_overrides.index("preprocess.pad_frames_around=2")] = "preprocess.pad_frames_around=5"
+    cfg3 = load_config(overrides=overrides_new_pad)
+    paths3 = resolve_paths(ENV_LOCAL, cfg3, create_dirs=True)
+    run_preprocessing(cfg=cfg3, paths=paths3)
+
+    meta3 = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta3["config_hash"] != hash1
+    assert meta3["parameters"]["preprocess.pad_frames_around"] == 5
+
+    # Run 4: Change trim_no_hand -> hash must change again
+    overrides_no_trim = list(base_overrides)
+    overrides_no_trim[base_overrides.index("preprocess.trim_no_hand=true")] = "preprocess.trim_no_hand=false"
+    cfg4 = load_config(overrides=overrides_no_trim)
+    paths4 = resolve_paths(ENV_LOCAL, cfg4, create_dirs=True)
+    run_preprocessing(cfg=cfg4, paths=paths4)
+
+    meta4 = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta4["config_hash"] != hash1
+    assert meta4["config_hash"] != meta3["config_hash"]
+    assert meta4["parameters"]["preprocess.trim_no_hand"] is False

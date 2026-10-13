@@ -16,8 +16,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -104,6 +106,24 @@ def pivot_parquet_to_raw_landmarks(parquet_path: Path) -> Tuple[np.ndarray, np.n
     return landmarks, unique_frames
 
 
+def compute_preprocess_hash(cfg: Config) -> Tuple[str, Dict[str, Any]]:
+    """Compute deterministic SHA256 hash of configuration parameters affecting feature output."""
+    meta_params: Dict[str, Any] = {
+        "preprocess.dominant_hand": str(cfg.preprocess.dominant_hand),
+        "preprocess.max_gap_frames": int(cfg.preprocess.max_gap_frames),
+        "preprocess.min_valid_frames": int(cfg.preprocess.min_valid_frames),
+        "preprocess.pad_frames_around": int(cfg.preprocess.pad_frames_around),
+        "preprocess.sequence_length": int(cfg.preprocess.sequence_length),
+        "preprocess.trim_no_hand": bool(cfg.preprocess.trim_no_hand),
+        "features.set": str(cfg.features.set),
+    }
+    if hasattr(cfg.features, "use_pose"):
+        meta_params["features.use_pose"] = bool(cfg.features.use_pose)
+    serialized = json.dumps(meta_params, sort_keys=True)
+    cfg_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return cfg_hash, meta_params
+
+
 def preprocess_single_sequence(
     parquet_path: Path,
     sequence_id: str,
@@ -112,23 +132,30 @@ def preprocess_single_sequence(
     label: int,
     cfg: Config,
     out_dir: Path,
+    reusable_manifest: Optional[Dict[str, Tuple[int, float]]] = None,
 ) -> PreprocessItemResult:
     """Execute end-to-end preprocessing for a single landmark sequence."""
     target_npy = out_dir / f"{sequence_id}.npy"
 
-    # Idempotent resume check
-    if target_npy.is_file() and target_npy.stat().st_size > 0:
+    # Idempotent resume check backed by existing valid manifest entry (zero fake values)
+    if (
+        reusable_manifest is not None
+        and sequence_id in reusable_manifest
+        and target_npy.is_file()
+        and target_npy.stat().st_size > 0
+    ):
         try:
             arr = np.load(str(target_npy))
-            expected_dim = get_feature_dim(cfg.features.set, cfg.features.use_pose)
+            expected_dim = get_feature_dim(cfg.features.set, getattr(cfg.features, "use_pose", False))
             if arr.shape == (cfg.preprocess.sequence_length, expected_dim):
+                n_valid, cov = reusable_manifest[sequence_id]
                 return PreprocessItemResult(
                     sequence_id=sequence_id,
                     participant_id=participant_id,
                     gloss=gloss,
                     label=label,
-                    n_valid_frames=cfg.preprocess.sequence_length,
-                    hand_coverage=1.0,
+                    n_valid_frames=n_valid,
+                    hand_coverage=cov,
                     npy_path=str(target_npy),
                     status="kept",
                 )
@@ -335,6 +362,53 @@ def run_preprocessing(
     logger.info(f"Preparing to preprocess {len(items_to_process)} sequences.")
     num_workers = max(1, cfg.preprocess.num_workers)
 
+    # Cache validation via preprocess_meta.json
+    meta_json_path = features_dir / "preprocess_meta.json"
+    manifest_csv = features_dir / "manifest.csv"
+    current_hash, meta_params = compute_preprocess_hash(cfg)
+
+    reusable_manifest: Dict[str, Tuple[int, float]] = {}
+    cache_is_valid = False
+
+    if meta_json_path.is_file():
+        try:
+            with open(meta_json_path, mode="r", encoding="utf-8") as f:
+                old_meta = json.load(f)
+            if old_meta.get("config_hash") == current_hash:
+                cache_is_valid = True
+                logger.info("Matching preprocess_meta.json found; cache is valid for resume.")
+            else:
+                logger.info("Preprocess parameters changed; invalidating existing features cache.")
+        except Exception:
+            logger.warning("Could not parse preprocess_meta.json; invalidating cache.")
+
+    if cache_is_valid and manifest_csv.is_file():
+        try:
+            with open(manifest_csv, mode="r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    sid = r.get("sequence_id", "").strip()
+                    if sid and "n_valid_frames" in r and "hand_coverage" in r:
+                        reusable_manifest[sid] = (
+                            int(r["n_valid_frames"]),
+                            float(r["hand_coverage"]),
+                        )
+            logger.info(f"Loaded {len(reusable_manifest)} existing sequences from manifest for resume.")
+        except Exception:
+            reusable_manifest.clear()
+    else:
+        # Cache is invalid or absent: clear old manifest and .npy files
+        if manifest_csv.is_file():
+            try:
+                manifest_csv.unlink()
+            except OSError:
+                pass
+        for old_npy in features_dir.glob("*.npy"):
+            try:
+                old_npy.unlink()
+            except OSError:
+                pass
+
     results: List[PreprocessItemResult] = []
     if num_workers > 1 and len(items_to_process) > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -348,6 +422,7 @@ def run_preprocessing(
                     item["label"],
                     cfg,
                     features_dir,
+                    reusable_manifest,
                 ): item
                 for item in items_to_process
             }
@@ -363,6 +438,7 @@ def run_preprocessing(
                 item["label"],
                 cfg,
                 features_dir,
+                reusable_manifest,
             )
             results.append(res)
 
@@ -377,7 +453,6 @@ def run_preprocessing(
     )
 
     # 7. Write manifest.csv
-    manifest_csv = features_dir / "manifest.csv"
     with open(manifest_csv, mode="w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -399,6 +474,14 @@ def run_preprocessing(
                 f"{r.hand_coverage:.4f}",
                 r.npy_path,
             ])
+
+    # Write preprocess_meta.json
+    meta_record = {
+        "config_hash": current_hash,
+        "parameters": meta_params,
+    }
+    with open(meta_json_path, mode="w", encoding="utf-8") as f:
+        json.dump(meta_record, f, indent=2)
 
     # Write excluded.csv
     excluded_csv = features_dir / "excluded.csv"
