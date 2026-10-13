@@ -336,13 +336,10 @@ class PreprocessConfig:
 @dataclass
 class FeaturesConfig:
     set: str = "hands"
-    use_pose: bool = False
 
     def validate(self) -> None:
         if self.set not in {"hands", "hands_pose"}:
             raise ValueError(f"Invalid features.set '{self.set}'. Allowed: ['hands', 'hands_pose'].")
-        if not isinstance(self.use_pose, bool):
-            raise TypeError("features.use_pose must be a boolean.")
 
 
 @dataclass
@@ -559,6 +556,11 @@ def _apply_override(cfg_dict: Dict[str, Any], override_str: str) -> None:
         )
 
     field_name = tokens[1]
+    if section_name == "features" and field_name == "use_pose":
+        raise KeyError(
+            "Khóa cấu hình 'features.use_pose' đã bị loại bỏ. "
+            "Vui lòng sử dụng 'features.set' ('hands' hoặc 'hands_pose')."
+        )
     allowed_keys = _get_allowed_keys_for_section(section_name)
     if field_name not in allowed_keys:
         raise KeyError(
@@ -619,6 +621,11 @@ def _build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:
             )
         allowed_keys = _get_allowed_keys_for_section(section_name)
         for field_name in section_data.keys():
+            if section_name == "features" and field_name == "use_pose":
+                raise KeyError(
+                    "Khóa cấu hình 'features.use_pose' đã bị loại bỏ. "
+                    "Vui lòng sử dụng 'features.set' ('hands' hoặc 'hands_pose')."
+                )
             if field_name not in allowed_keys:
                 raise KeyError(
                     f"Unknown configuration key '{field_name}' in section '{section_name}'. "

@@ -262,6 +262,26 @@ def test_removed_config_keys_raise_clear_unknown_key_error(removed_key: str) -> 
         load_config(overrides=[f"{removed_key}=dummy_val"])
 
 
+def test_deprecated_features_use_pose_raises_vietnamese_key_error(tmp_path: Path) -> None:
+    """Verify that features.use_pose in YAML or CLI override raises a clear Vietnamese KeyError."""
+    expected_msg = (
+        "Khóa cấu hình 'features.use_pose' đã bị loại bỏ. "
+        "Vui lòng sử dụng 'features.set' ('hands' hoặc 'hands_pose')."
+    )
+
+    # 1. Via CLI override
+    with pytest.raises(KeyError) as exc_info_cli:
+        load_config(overrides=["features.use_pose=true"])
+    assert expected_msg in str(exc_info_cli.value)
+
+    # 2. Via YAML file
+    old_yaml = tmp_path / "legacy_config.yaml"
+    old_yaml.write_text("features:\n  use_pose: true\n", encoding="utf-8")
+    with pytest.raises(KeyError) as exc_info_yaml:
+        load_config(old_yaml)
+    assert expected_msg in str(exc_info_yaml.value)
+
+
 def test_every_kept_key_override_updates_code_values() -> None:
     """Verify overriding each single kept key changes the exact value used across modules.
 

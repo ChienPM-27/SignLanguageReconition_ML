@@ -75,15 +75,12 @@ def test_interpolate_bounded_gaps() -> None:
 
 def test_feature_dimension_deduction() -> None:
     # hands only: 143 dims
-    dim_hands = get_feature_dim("hands", use_pose=False)
+    dim_hands = get_feature_dim("hands")
     assert dim_hands == 143
 
     # hands_pose: 160 dims
-    dim_hands_pose = get_feature_dim("hands_pose", use_pose=False)
+    dim_hands_pose = get_feature_dim("hands_pose")
     assert dim_hands_pose == 160
-
-    dim_use_pose = get_feature_dim("hands", use_pose=True)
-    assert dim_use_pose == 160
 
     # Test feature vector computation produces exact dimensions
     T = 16
@@ -92,10 +89,10 @@ def test_feature_dimension_deduction() -> None:
     p_coords = np.ones((T, 33, 3), dtype=np.float32)
     p_masks = np.ones((T, 1), dtype=bool)
 
-    f_hands = compute_feature_vector(h_coords, h_masks, use_pose=False)
+    f_hands = compute_feature_vector(h_coords, h_masks, feature_set="hands")
     assert f_hands.shape == (T, 143)
 
-    f_pose = compute_feature_vector(h_coords, h_masks, p_coords, p_masks, use_pose=True)
+    f_pose = compute_feature_vector(h_coords, h_masks, p_coords, p_masks, feature_set="hands_pose")
     assert f_pose.shape == (T, 160)
 
 

@@ -16,20 +16,18 @@ from typing import Optional, Tuple
 import numpy as np
 
 
-def get_feature_dim(feature_set: str = "hands", use_pose: bool = False) -> int:
-    """Deterministically derive feature vector dimension from configuration.
+def get_feature_dim(feature_set: str = "hands") -> int:
+    """Deterministically derive feature vector dimension from feature set.
 
     Args:
         feature_set: 'hands' (143) or 'hands_pose' (160).
-        use_pose: Boolean flag to append upper body pose reference points.
 
     Returns:
         int: Total feature dimensions per frame.
     """
-    dim = 143
-    if use_pose or feature_set == "hands_pose":
-        dim += 17  # 12 (4 pose landmarks * 3) + 3 (torso center vel) + 1 (torso scale) + 1 (pose mask)
-    return dim
+    if feature_set == "hands_pose":
+        return 160
+    return 143
 
 
 def trim_idle_frames(
@@ -180,16 +178,16 @@ def compute_feature_vector(
     hands_masks: np.ndarray,
     pose_coords: Optional[np.ndarray] = None,
     pose_masks: Optional[np.ndarray] = None,
-    use_pose: bool = False,
+    feature_set: str = "hands",
 ) -> np.ndarray:
     """Compute comprehensive feature vector with optional upper-body pose reference.
 
     Dimensions:
-    - If use_pose is False: 143 dims.
-    - If use_pose is True: 160 dims (143 hands + 17 pose torso & elbow features).
+    - If feature_set == 'hands': 143 dims.
+    - If feature_set == 'hands_pose': 160 dims (143 hands + 17 pose torso & elbow features).
     """
     hand_feats = compute_feature_vector_143(hands_coords, hands_masks)
-    if not use_pose or pose_coords is None:
+    if feature_set != "hands_pose" or pose_coords is None:
         return hand_feats
 
     T = len(hands_coords)

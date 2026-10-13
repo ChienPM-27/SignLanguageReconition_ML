@@ -99,7 +99,7 @@ def run_overfit_check(
     logger.info("Executing Overfit Verification Check (1 sample per gloss, 0 dropout, no aug)...")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_dim = get_feature_dim(cfg.features.set, cfg.features.use_pose)
+    expected_dim = get_feature_dim(cfg.features.set)
     train_ds = ISRLandmarkDataset(
         split_csv=train_csv,
         is_train=True,
@@ -183,7 +183,7 @@ def run_baseline_rf(
     logger.info("Executing Random Forest Tabular Baseline (mean, std, min, max across sequence)...")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_dim = get_feature_dim(cfg.features.set, cfg.features.use_pose)
+    expected_dim = get_feature_dim(cfg.features.set)
 
     def extract_rf_features(csv_path: Path) -> Tuple[np.ndarray, np.ndarray]:
         ds = ISRLandmarkDataset(
@@ -260,7 +260,7 @@ def train_single_seed(
     set_seed(seed)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_dim = get_feature_dim(cfg.features.set, cfg.features.use_pose)
+    expected_dim = get_feature_dim(cfg.features.set)
 
     train_ds = ISRLandmarkDataset(
         split_csv=train_csv,

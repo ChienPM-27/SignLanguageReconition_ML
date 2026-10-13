@@ -81,7 +81,6 @@ preprocess:
 
 features:
   set: "hands"                    # Feature landmark set: 'hands' or 'hands_pose'
-  use_pose: false                 # Include torso shoulder/elbow landmarks for scale/coords
 
 split:
   method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'

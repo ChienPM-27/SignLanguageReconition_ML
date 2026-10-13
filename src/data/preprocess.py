@@ -117,8 +117,6 @@ def compute_preprocess_hash(cfg: Config) -> Tuple[str, Dict[str, Any]]:
         "preprocess.trim_no_hand": bool(cfg.preprocess.trim_no_hand),
         "features.set": str(cfg.features.set),
     }
-    if hasattr(cfg.features, "use_pose"):
-        meta_params["features.use_pose"] = bool(cfg.features.use_pose)
     serialized = json.dumps(meta_params, sort_keys=True)
     cfg_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     return cfg_hash, meta_params
@@ -146,7 +144,7 @@ def preprocess_single_sequence(
     ):
         try:
             arr = np.load(str(target_npy))
-            expected_dim = get_feature_dim(cfg.features.set, getattr(cfg.features, "use_pose", False))
+            expected_dim = get_feature_dim(cfg.features.set)
             if arr.shape == (cfg.preprocess.sequence_length, expected_dim):
                 n_valid, cov = reusable_manifest[sequence_id]
                 return PreprocessItemResult(
@@ -278,7 +276,7 @@ def preprocess_single_sequence(
         hands_masks=resampled_hand_masks,
         pose_coords=resampled_pose,
         pose_masks=resampled_pose_masks,
-        use_pose=cfg.features.use_pose or (cfg.features.set == "hands_pose"),
+        feature_set=cfg.features.set,
     )
 
     # 7. Save feature .npy
@@ -549,7 +547,7 @@ def _generate_preprocess_report(
         f"- **Total Sequences Processed:** {total}",
         f"- **Retained (Kept) Sequences:** {len(kept)} ({len(kept)/total*100:.1f}%)" if total else "- Kept: 0",
         f"- **Excluded Sequences:** {len(excluded)}",
-        f"- **Feature Dimension Inferred:** `{get_feature_dim(cfg.features.set, cfg.features.use_pose)}`",
+        f"- **Feature Dimension Inferred:** `{get_feature_dim(cfg.features.set)}`",
         f"- **Target Temporal Length:** `{cfg.preprocess.sequence_length}`",
         f"- **Mean Hand Coverage (Kept):** `{mean_cov:.3f}`",
         "",
