@@ -1,27 +1,43 @@
-"""Module chuẩn hóa không gian, thời gian và trích xuất vector đặc trưng 143 chiều.
+"""Spatial/temporal normalization and feature extraction for ISLR landmarks.
 
-Thiết kế đặc trưng bảo toàn thông tin toàn diện:
-1. Cắt đoạn nghỉ đầu/cuối (Trim idle frames).
-2. Điền frame mất tay bằng nội suy giữa các frame hợp lệ lân cận (tránh nội suy vào zero).
-3. Resample thời gian về T = 32 frames (tọa độ nội suy tuyến tính, mask dùng nearest neighbor).
-4. Vector đặc trưng 143 chiều per frame:
-   - Local Hand Shape (126 dims): Dời về cổ tay, chia cho palm size.
-   - Global Wrist Coords (6 dims): Tọa độ cổ tay toàn cục trong khung hình.
-   - Relative Wrist Vector (3 dims): Vector tương đối wrist_1 - wrist_2.
-   - Wrist Velocities (6 dims): Vận tốc chuyển động cổ tay delta giữa các frame.
-   - Hand Mask (2 dims): Cờ boolean biểu thị frame có tay thật sự.
+Features:
+- Configurable feature sets: 'hands' (143 dims) or 'hands_pose' (160 dims).
+- Automatic feature dimension deduction (zero hardcoding).
+- Dominant hand handling, wrist centering, and palm size scaling.
+- Short gap interpolation bounded by max_gap_frames.
+- Temporal resampling to fixed T frames.
+- Upper-body pose landmark normalization (shoulders, elbows) relative to torso.
 """
+
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
 import numpy as np
+
+
+def get_feature_dim(feature_set: str = "hands", use_pose: bool = False) -> int:
+    """Deterministically derive feature vector dimension from configuration.
+
+    Args:
+        feature_set: 'hands' (143) or 'hands_pose' (160).
+        use_pose: Boolean flag to append upper body pose reference points.
+
+    Returns:
+        int: Total feature dimensions per frame.
+    """
+    dim = 143
+    if use_pose or feature_set == "hands_pose":
+        dim += 17  # 12 (4 pose landmarks * 3) + 3 (torso center vel) + 1 (torso scale) + 1 (pose mask)
+    return dim
 
 
 def trim_idle_frames(
     raw_coords: np.ndarray,
     hand_masks: np.ndarray,
-    margin: int = 2
-) -> tuple[np.ndarray, np.ndarray]:
-    """Cắt bỏ các frame tay đứng yên/nghỉ ở đầu và cuối video."""
+    margin: int = 2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Trim leading and trailing frames where neither hand is detected."""
     T = len(raw_coords)
     if T == 0:
         return raw_coords, hand_masks
@@ -36,44 +52,62 @@ def trim_idle_frames(
     return raw_coords[start:end], hand_masks[start:end]
 
 
-def interpolate_missing_hands(
+def interpolate_bounded_gaps(
     raw_coords: np.ndarray,
-    hand_masks: np.ndarray
-) -> np.ndarray:
-    """Nội suy tọa độ các frame mất tay ngắn hạn từ các frame hợp lệ lân cận."""
+    hand_masks: np.ndarray,
+    max_gap_frames: int = 3,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Interpolate short NaN gaps (<= max_gap_frames) between valid hand detections.
+
+    Gaps longer than max_gap_frames remain zero with mask=False.
+    """
     T, num_hands, num_lms, dims = raw_coords.shape
-    filled_coords = raw_coords.copy()
+    filled_coords = np.nan_to_num(raw_coords, nan=0.0)
+    updated_masks = hand_masks.copy()
 
     for h in range(num_hands):
-        valid_t = np.where(hand_masks[:, h])[0]
-        # Nếu tay này hoàn toàn không xuất hiện trong cả video -> giữ 0
-        if len(valid_t) == 0:
-            continue
-        # Nếu chỉ có 1 frame hợp lệ -> gán frame đó cho mọi vị trí
-        if len(valid_t) == 1:
-            filled_coords[:, h] = filled_coords[valid_t[0], h]
+        valid_indices = np.where(hand_masks[:, h])[0]
+        if len(valid_indices) < 2:
             continue
 
-        # Nội suy tuyến tính từng landmark (x, y, z) qua trục thời gian
-        for lm in range(num_lms):
-            for d in range(dims):
-                xp = valid_t
-                fp = raw_coords[valid_t, h, lm, d]
-                # np.interp tự động nội suy ở giữa và ngoại suy bằng constant ở 2 đầu
-                filled_coords[:, h, lm, d] = np.interp(np.arange(T), xp, fp)
+        for i in range(len(valid_indices) - 1):
+            idx_start = valid_indices[i]
+            idx_end = valid_indices[i + 1]
+            gap_len = idx_end - idx_start - 1
+            if 0 < gap_len <= max_gap_frames:
+                # Linearly interpolate across this short gap
+                for t in range(idx_start + 1, idx_end):
+                    alpha = (t - idx_start) / (idx_end - idx_start)
+                    filled_coords[t, h] = (
+                        (1.0 - alpha) * raw_coords[idx_start, h]
+                        + alpha * raw_coords[idx_end, h]
+                    )
+                    updated_masks[t, h] = True
 
-    return filled_coords
+    return filled_coords, updated_masks
+
+
+def interpolate_missing_hands(
+    raw_coords: np.ndarray,
+    hand_masks: np.ndarray,
+) -> np.ndarray:
+    """Legacy interpolation helper for backward compatibility."""
+    filled, _ = interpolate_bounded_gaps(raw_coords, hand_masks, max_gap_frames=999)
+    return filled
 
 
 def resample_temporal(
     coords: np.ndarray,
     masks: np.ndarray,
-    target_len: int = 32
-) -> tuple[np.ndarray, np.ndarray]:
-    """Resample chuỗi thời gian về độ dài cố định T=32 frames."""
+    target_len: int = 32,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Resample continuous coordinates linearly and masks by nearest neighbor to target_len."""
     T = len(coords)
     if T == 0:
-        return np.zeros((target_len, *coords.shape[1:]), dtype=np.float32), np.zeros((target_len, masks.shape[1]), dtype=bool)
+        return (
+            np.zeros((target_len, *coords.shape[1:]), dtype=np.float32),
+            np.zeros((target_len, masks.shape[1]), dtype=bool),
+        )
 
     if T == target_len:
         return coords.astype(np.float32), masks.astype(bool)
@@ -81,14 +115,12 @@ def resample_temporal(
     orig_t = np.linspace(0.0, 1.0, T)
     target_t = np.linspace(0.0, 1.0, target_len)
 
-    # 1. Nội suy tọa độ liên tục bằng Linear Interpolation
     flat_coords = coords.reshape(T, -1)
     resampled_flat = np.zeros((target_len, flat_coords.shape[1]), dtype=np.float32)
     for i in range(flat_coords.shape[1]):
         resampled_flat[:, i] = np.interp(target_t, orig_t, flat_coords[:, i])
     resampled_coords = resampled_flat.reshape(target_len, *coords.shape[1:])
 
-    # 2. Resample Mask bằng Nearest Neighbor (bảo toàn giá trị boolean)
     nearest_idx = np.searchsorted(orig_t, target_t)
     nearest_idx = np.clip(nearest_idx, 0, T - 1)
     resampled_masks = masks[nearest_idx]
@@ -98,32 +130,24 @@ def resample_temporal(
 
 def compute_feature_vector_143(
     coords: np.ndarray,
-    masks: np.ndarray
+    masks: np.ndarray,
 ) -> np.ndarray:
-    """Biến đổi tọa độ (T, 2, 21, 3) thành ma trận đặc trưng (T, 143).
-
-    Cấu trúc 143 đặc trưng:
-    - [0:126]: Local Hand Shapes (21 x 3 x 2 tay) sau khi dời cổ tay và chia palm size
-    - [126:132]: Global Wrist Coordinates (x, y, z x 2 tay)
-    - [132:135]: Relative Wrist Vector (wrist_1 - wrist_2)
-    - [135:141]: Wrist Velocities (delta wrist giữa 2 frame liên tiếp x 2 tay)
-    - [141:143]: Hand Presence Masks (has_hand1, has_hand2)
-    """
+    """Transform (T, 2, 21, 3) hand landmarks into standard 143-dim feature matrix."""
     T = len(coords)
     features = np.zeros((T, 143), dtype=np.float32)
+    if T == 0:
+        return features
 
-    # Lưu tọa độ cổ tay toàn cục (global wrist coords)
-    global_wrists = coords[:, :, 0, :].copy()  # shape (T, 2, 3)
+    global_wrists = coords[:, :, 0, :].copy()  # (T, 2, 3)
 
     # 1. Local Hand Shapes (126 dims)
     local_shapes = np.zeros((T, 2, 21, 3), dtype=np.float32)
     for h in range(2):
         for t in range(T):
             if masks[t, h]:
-                hand_pts = coords[t, h].copy()  # (21, 3)
+                hand_pts = coords[t, h].copy()
                 wrist = hand_pts[0].copy()
                 hand_centered = hand_pts - wrist
-                # Palm size = khoảng cách từ cổ tay (0) đến gốc ngón giữa (9)
                 palm_size = float(np.linalg.norm(hand_centered[9]))
                 if palm_size > 1e-4:
                     hand_centered /= palm_size
@@ -136,7 +160,6 @@ def compute_feature_vector_143(
 
     # 3. Relative Wrist Vector (3 dims: [132:135])
     rel_wrist = global_wrists[:, 0, :] - global_wrists[:, 1, :]
-    # Chỉ giữ vector tương đối nếu cả 2 tay đều xuất hiện
     two_hand_mask = (masks[:, 0] & masks[:, 1])[:, np.newaxis]
     features[:, 132:135] = np.where(two_hand_mask, rel_wrist, 0.0)
 
@@ -152,24 +175,78 @@ def compute_feature_vector_143(
     return features
 
 
+def compute_feature_vector(
+    hands_coords: np.ndarray,
+    hands_masks: np.ndarray,
+    pose_coords: Optional[np.ndarray] = None,
+    pose_masks: Optional[np.ndarray] = None,
+    use_pose: bool = False,
+) -> np.ndarray:
+    """Compute comprehensive feature vector with optional upper-body pose reference.
+
+    Dimensions:
+    - If use_pose is False: 143 dims.
+    - If use_pose is True: 160 dims (143 hands + 17 pose torso & elbow features).
+    """
+    hand_feats = compute_feature_vector_143(hands_coords, hands_masks)
+    if not use_pose or pose_coords is None:
+        return hand_feats
+
+    T = len(hands_coords)
+    # Pose keypoints: [11: L_shoulder, 12: R_shoulder, 13: L_elbow, 14: R_elbow]
+    # shape (T, 4, 3)
+    pose_pts = pose_coords[:, [11, 12, 13, 14], :].copy()
+    l_sh = pose_pts[:, 0, :]
+    r_sh = pose_pts[:, 1, :]
+    torso_center = (l_sh + r_sh) / 2.0  # (T, 3)
+    torso_scale = np.linalg.norm(l_sh - r_sh, axis=-1, keepdims=True)  # (T, 1)
+
+    # Normalize pose points relative to torso center and scale
+    norm_pose = np.zeros_like(pose_pts)
+    valid_scale = (torso_scale[:, 0] > 1e-4)
+    for i in range(4):
+        centered = pose_pts[:, i, :] - torso_center
+        norm_pose[:, i, :] = np.where(
+            valid_scale[:, np.newaxis],
+            centered / np.maximum(torso_scale, 1e-4),
+            0.0,
+        )
+
+    # Torso velocity
+    torso_vel = np.zeros((T, 3), dtype=np.float32)
+    if T > 1:
+        torso_vel[1:] = torso_center[1:] - torso_center[:-1]
+
+    p_mask = pose_masks if pose_masks is not None else np.ones((T, 1), dtype=np.float32)
+    if p_mask.ndim == 1:
+        p_mask = p_mask[:, np.newaxis]
+
+    pose_features = np.hstack([
+        norm_pose.reshape(T, 12),
+        torso_vel,
+        np.clip(torso_scale, 0.0, 2.0),
+        p_mask[:, :1].astype(np.float32),
+    ])
+
+    return np.hstack([hand_feats, pose_features]).astype(np.float32)
+
+
 def process_video_landmarks(
     raw_coords: np.ndarray,
     hand_masks: np.ndarray,
-    target_len: int = 32
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pipeline chuẩn hóa hoàn chỉnh: Trim -> Interpolate -> Resample -> 143-dim Features."""
-    # Bước 1: Cắt đoạn nghỉ
+    target_len: int = 32,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Standard pipeline for video landmarks backward compatibility."""
     trimmed_coords, trimmed_masks = trim_idle_frames(raw_coords, hand_masks)
     if len(trimmed_coords) == 0:
-        return np.zeros((target_len, 143), dtype=np.float32), np.zeros((target_len, 2), dtype=bool)
+        return (
+            np.zeros((target_len, 143), dtype=np.float32),
+            np.zeros((target_len, 2), dtype=bool),
+        )
 
-    # Bước 2: Điền frame mất tay bằng nội suy giữa các frame có tay
-    filled_coords = interpolate_missing_hands(trimmed_coords, trimmed_masks)
-
-    # Bước 3: Resample thời gian về target_len = 32
-    resampled_coords, resampled_masks = resample_temporal(filled_coords, trimmed_masks, target_len=target_len)
-
-    # Bước 4: Trích xuất vector đặc trưng 143 chiều
+    filled_coords, filled_masks = interpolate_bounded_gaps(trimmed_coords, trimmed_masks)
+    resampled_coords, resampled_masks = resample_temporal(
+        filled_coords, filled_masks, target_len=target_len
+    )
     features_143 = compute_feature_vector_143(resampled_coords, resampled_masks)
-
     return features_143, resampled_masks

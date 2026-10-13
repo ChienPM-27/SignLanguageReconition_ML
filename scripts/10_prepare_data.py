@@ -17,6 +17,7 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from src.data.download import download_target_gloss_data
+from src.data.preprocess import run_preprocessing
 from src.data.selection import select_20_glosses
 from src.utils.config import DEFAULT_CONFIG_PATH, load_config, save_config
 from src.utils.env import detect_env, resolve_paths
@@ -80,10 +81,11 @@ def run_pipeline(
         download_manifest, download_records = download_target_gloss_data(cfg=cfg, paths=paths)
         logger.info(f"Download complete: {len(download_records)} records -> {download_manifest}")
 
-    # Stage: Preprocess (to be connected in Step 3)
+    # Stage: Preprocess
     if stage in ("preprocess", "all"):
-        if stage == "preprocess":
-            logger.info("Preprocess stage requested.")
+        logger.info("Executing Stage: Preprocess (Parquet -> .npy features)")
+        feat_manifest, excluded_csv, prep_report = run_preprocessing(cfg=cfg, paths=paths)
+        logger.info(f"Preprocessing complete: manifest -> {feat_manifest}, report -> {prep_report}")
 
     # Stage: Split (to be connected in Step 4)
     if stage in ("split", "all"):

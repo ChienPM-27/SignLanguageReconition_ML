@@ -69,3 +69,75 @@ output:
   selection_dir: "data/selection" # Directory for gloss selection outputs
   save_resolved_config: true      # Persist resolved config along with artifacts
   overwrite: true                 # Whether to overwrite existing reports and outputs
+
+preprocess:
+  trim_no_hand: true              # Trim leading/trailing frames with no hand detected
+  pad_frames_around: 2            # Buffer frames to keep around valid hand window
+  min_valid_frames: 3             # Minimum valid hand frames required to retain sequence
+  max_gap_frames: 3               # Maximum short gap of frames to interpolate
+  sequence_length: 32             # Fixed temporal length to resample sequences to
+  num_workers: 4                  # Workers for parallel preprocessing
+  dominant_hand: "auto"           # Determine dominant hand by data ('auto' or disabled)
+
+features:
+  set: "hands"                    # Feature landmark set: 'hands' or 'hands_pose'
+  use_pose: false                 # Include torso shoulder/elbow landmarks for scale/coords
+
+split:
+  method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'
+  n_train: 0.7                    # Train participant ratio or count
+  n_val: 0.15                     # Validation participant ratio or count
+  n_test: 0.15                    # Test participant ratio or count
+  n_folds: 5                      # Number of folds if group_kfold
+  seed: 42                        # Seed for participant splitting
+  min_per_gloss_per_split: 1      # Minimum sequence count per gloss in each split
+
+augmentation:
+  flip:
+    enabled: true
+    prob: 0.5
+  jitter:
+    enabled: true
+    prob: 0.5
+    sigma: 0.01
+  rotate:
+    enabled: true
+    prob: 0.5
+    max_angle_deg: 8.0
+  time_stretch:
+    enabled: false
+    prob: 0.3
+    max_stretch: 0.2
+
+model:
+  name: "GRU"
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.3
+  bidirectional: false
+
+training:
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  epochs: 60
+  patience: 15
+  scheduler:
+    type: "plateau"
+    factor: 0.5
+    patience: 5
+  grad_clip: 1.0
+  num_seeds: 3
+  seeds:
+    - 42
+    - 43
+    - 44
+  amp: false
+  num_workers: 0
+  device: "auto"
+
+run:
+  name: "gru_baseline"
+  output_dir: "outputs/runs"
+

@@ -309,12 +309,171 @@ class OutputConfig:
 
 
 @dataclass
+class PreprocessConfig:
+    trim_no_hand: bool = True
+    pad_frames_around: int = 2
+    min_valid_frames: int = 3
+    max_gap_frames: int = 3
+    sequence_length: int = 32
+    num_workers: int = 4
+    dominant_hand: str = "auto"
+
+    def validate(self) -> None:
+        if not isinstance(self.trim_no_hand, bool):
+            raise TypeError("preprocess.trim_no_hand must be a boolean.")
+        if type(self.pad_frames_around) is bool or not isinstance(self.pad_frames_around, int) or self.pad_frames_around < 0:
+            raise ValueError("preprocess.pad_frames_around must be an integer >= 0.")
+        if type(self.min_valid_frames) is bool or not isinstance(self.min_valid_frames, int) or self.min_valid_frames < 1:
+            raise ValueError("preprocess.min_valid_frames must be an integer >= 1.")
+        if type(self.max_gap_frames) is bool or not isinstance(self.max_gap_frames, int) or self.max_gap_frames < 0:
+            raise ValueError("preprocess.max_gap_frames must be an integer >= 0.")
+        if type(self.sequence_length) is bool or not isinstance(self.sequence_length, int) or self.sequence_length < 4:
+            raise ValueError("preprocess.sequence_length must be an integer >= 4.")
+        if type(self.num_workers) is bool or not isinstance(self.num_workers, int) or self.num_workers < 1:
+            raise ValueError("preprocess.num_workers must be an integer >= 1.")
+
+
+@dataclass
+class FeaturesConfig:
+    set: str = "hands"
+    use_pose: bool = False
+
+    def validate(self) -> None:
+        if self.set not in {"hands", "hands_pose"}:
+            raise ValueError(f"Invalid features.set '{self.set}'. Allowed: ['hands', 'hands_pose'].")
+        if not isinstance(self.use_pose, bool):
+            raise TypeError("features.use_pose must be a boolean.")
+
+
+@dataclass
+class SplitConfig:
+    method: str = "participant_holdout"
+    n_train: float = 0.7
+    n_val: float = 0.15
+    n_test: float = 0.15
+    n_folds: int = 5
+    seed: int = 42
+    min_per_gloss_per_split: int = 1
+
+    def validate(self) -> None:
+        if self.method not in {"participant_holdout", "group_kfold"}:
+            raise ValueError(f"Invalid split.method '{self.method}'. Allowed: ['participant_holdout', 'group_kfold'].")
+        for k, v in [("n_train", self.n_train), ("n_val", self.n_val), ("n_test", self.n_test)]:
+            if type(v) is bool or not isinstance(v, (int, float)) or v <= 0:
+                raise ValueError(f"split.{k} must be a positive number.")
+        if type(self.n_folds) is bool or not isinstance(self.n_folds, int) or self.n_folds < 2:
+            raise ValueError("split.n_folds must be an integer >= 2.")
+        if type(self.seed) is bool or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("split.seed must be an integer >= 0.")
+        if type(self.min_per_gloss_per_split) is bool or not isinstance(self.min_per_gloss_per_split, int) or self.min_per_gloss_per_split < 0:
+            raise ValueError("split.min_per_gloss_per_split must be an integer >= 0.")
+
+
+@dataclass
+class AugmentationConfig:
+    flip: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5})
+    jitter: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "sigma": 0.01})
+    rotate: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "max_angle_deg": 8.0})
+    time_stretch: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "prob": 0.3, "max_stretch": 0.2})
+
+    def validate(self) -> None:
+        for name, sub in [("flip", self.flip), ("jitter", self.jitter), ("rotate", self.rotate), ("time_stretch", self.time_stretch)]:
+            if not isinstance(sub, dict):
+                raise TypeError(f"augmentation.{name} must be a dictionary.")
+
+
+@dataclass
+class ModelConfig:
+    name: str = "GRU"
+    hidden_size: int = 128
+    num_layers: int = 2
+    dropout: float = 0.3
+    bidirectional: bool = False
+
+    def validate(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("model.name must be a non-empty string.")
+        if type(self.hidden_size) is bool or not isinstance(self.hidden_size, int) or self.hidden_size < 8:
+            raise ValueError("model.hidden_size must be an integer >= 8.")
+        if type(self.num_layers) is bool or not isinstance(self.num_layers, int) or self.num_layers < 1:
+            raise ValueError("model.num_layers must be an integer >= 1.")
+        if not isinstance(self.dropout, (int, float)) or not (0.0 <= self.dropout <= 1.0):
+            raise ValueError("model.dropout must be a float between 0.0 and 1.0.")
+        if not isinstance(self.bidirectional, bool):
+            raise TypeError("model.bidirectional must be a boolean.")
+
+
+@dataclass
+class TrainingConfig:
+    batch_size: int = 32
+    lr: float = 0.001
+    weight_decay: float = 0.0001
+    label_smoothing: float = 0.1
+    epochs: int = 60
+    patience: int = 15
+    scheduler: Dict[str, Any] = field(default_factory=lambda: {"type": "plateau", "factor": 0.5, "patience": 5})
+    grad_clip: float = 1.0
+    num_seeds: int = 3
+    seeds: List[int] = field(default_factory=lambda: [42, 43, 44])
+    amp: bool = False
+    num_workers: int = 0
+    device: str = "auto"
+
+    def validate(self) -> None:
+        if type(self.batch_size) is bool or not isinstance(self.batch_size, int) or self.batch_size < 1:
+            raise ValueError("training.batch_size must be an integer >= 1.")
+        if not isinstance(self.lr, (int, float)) or self.lr <= 0:
+            raise ValueError("training.lr must be a positive float.")
+        if not isinstance(self.weight_decay, (int, float)) or self.weight_decay < 0:
+            raise ValueError("training.weight_decay must be >= 0.")
+        if not isinstance(self.label_smoothing, (int, float)) or not (0.0 <= self.label_smoothing <= 1.0):
+            raise ValueError("training.label_smoothing must be between 0.0 and 1.0.")
+        if type(self.epochs) is bool or not isinstance(self.epochs, int) or self.epochs < 1:
+            raise ValueError("training.epochs must be an integer >= 1.")
+        if type(self.patience) is bool or not isinstance(self.patience, int) or self.patience < 1:
+            raise ValueError("training.patience must be an integer >= 1.")
+        if not isinstance(self.scheduler, dict):
+            raise TypeError("training.scheduler must be a dictionary.")
+        if not isinstance(self.grad_clip, (int, float)) or self.grad_clip <= 0:
+            raise ValueError("training.grad_clip must be > 0.")
+        if type(self.num_seeds) is bool or not isinstance(self.num_seeds, int) or self.num_seeds < 1:
+            raise ValueError("training.num_seeds must be an integer >= 1.")
+        if not isinstance(self.seeds, list) or not self.seeds:
+            raise ValueError("training.seeds must be a non-empty list of integers.")
+        if not isinstance(self.amp, bool):
+            raise TypeError("training.amp must be a boolean.")
+        if type(self.num_workers) is bool or not isinstance(self.num_workers, int) or self.num_workers < 0:
+            raise ValueError("training.num_workers must be an integer >= 0.")
+        if not isinstance(self.device, str) or not self.device.strip():
+            raise ValueError("training.device must be a non-empty string.")
+
+
+@dataclass
+class RunConfig:
+    name: str = "gru_baseline"
+    output_dir: str = "outputs/runs"
+
+    def validate(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("run.name must be a non-empty string.")
+        if not isinstance(self.output_dir, str) or not self.output_dir.strip():
+            raise ValueError("run.output_dir must be a non-empty string.")
+
+
+@dataclass
 class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     data: DataConfig = field(default_factory=DataConfig)
     eda: EDAConfig = field(default_factory=EDAConfig)
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)
+    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    run: RunConfig = field(default_factory=RunConfig)
 
     def validate(self) -> None:
         self.env.validate()
@@ -322,6 +481,13 @@ class Config:
         self.eda.validate()
         self.selection.validate()
         self.output.validate()
+        self.preprocess.validate()
+        self.features.validate()
+        self.split.validate()
+        self.augmentation.validate()
+        self.model.validate()
+        self.training.validate()
+        self.run.validate()
         if self.eda.num_landmark_probe_files > self.data.sample_budget_total_files:
             raise ValueError(
                 f"eda.num_landmark_probe_files ({self.eda.num_landmark_probe_files}) "
@@ -338,6 +504,13 @@ _SECTION_CLASSES = {
     "eda": EDAConfig,
     "selection": SelectionConfig,
     "output": OutputConfig,
+    "preprocess": PreprocessConfig,
+    "features": FeaturesConfig,
+    "split": SplitConfig,
+    "augmentation": AugmentationConfig,
+    "model": ModelConfig,
+    "training": TrainingConfig,
+    "run": RunConfig,
 }
 
 
