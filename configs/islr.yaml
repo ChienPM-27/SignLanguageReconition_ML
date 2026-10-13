@@ -117,6 +117,7 @@ model:
   bidirectional: false
 
 training:
+  preload: "device"               # Nạp trước dữ liệu: 'none' (đọc đĩa từng mẫu), 'ram' (nạp vào RAM CPU), 'device' (nạp thẳng lên GPU/CPU, tự quản lý loader, bỏ qua num_workers)
   batch_size: 32
   lr: 0.001
   weight_decay: 0.0001
@@ -134,7 +135,7 @@ training:
     - 43
     - 44
   amp: false
-  num_workers: 0
+  num_workers: 0                  # Số worker DataLoader (bị bỏ qua khi training.preload='device')
   device: "auto"
 
 run:

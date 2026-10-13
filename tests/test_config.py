@@ -323,3 +323,17 @@ def test_every_kept_key_override_updates_code_values() -> None:
     assert paths_kaggle.report_dir == Path("/kaggle/working/custom_reports")
 
 
+def test_training_preload_config() -> None:
+    """Verify training.preload default, valid overrides, and invalid value validation."""
+    cfg = load_config()
+    assert cfg.training.preload == "device"
+
+    for valid_val in ["none", "ram", "device"]:
+        c = load_config(overrides=[f"training.preload={valid_val}"])
+        assert c.training.preload == valid_val
+
+    with pytest.raises(ValueError, match="Invalid training.preload 'invalid_mode'"):
+        load_config(overrides=["training.preload=invalid_mode"])
+
+
+

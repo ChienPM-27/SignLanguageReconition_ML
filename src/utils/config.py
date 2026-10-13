@@ -402,6 +402,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
+    preload: str = "device"
     batch_size: int = 32
     lr: float = 0.001
     weight_decay: float = 0.0001
@@ -417,6 +418,8 @@ class TrainingConfig:
     device: str = "auto"
 
     def validate(self) -> None:
+        if self.preload not in {"none", "ram", "device"}:
+            raise ValueError(f"Invalid training.preload '{self.preload}'. Allowed: ['none', 'ram', 'device'].")
         if type(self.batch_size) is bool or not isinstance(self.batch_size, int) or self.batch_size < 1:
             raise ValueError("training.batch_size must be an integer >= 1.")
         if not isinstance(self.lr, (int, float)) or self.lr <= 0:

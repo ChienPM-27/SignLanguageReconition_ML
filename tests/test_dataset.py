@@ -162,3 +162,90 @@ def test_augmentation_functions() -> None:
     }
     augmented = apply_augmentation(arr, cfg=aug_cfg)
     assert augmented.shape == arr.shape
+
+
+def test_preload_modes_parity(tmp_path: Path) -> None:
+    split_csv, _ = _create_synthetic_split_dataset(tmp_path, num_samples=6, num_classes=3)
+
+    ds_none = ISRLandmarkDataset(split_csv=split_csv, preload="none", sequence_length=32, feature_dim=143)
+    ds_ram = ISRLandmarkDataset(split_csv=split_csv, preload="ram", sequence_length=32, feature_dim=143)
+    ds_dev = ISRLandmarkDataset(split_csv=split_csv, preload="device", device="cpu", sequence_length=32, feature_dim=143)
+
+    assert ds_none.preloaded_features is None
+    assert ds_none.preloaded_labels is None
+    assert ds_ram.preloaded_features is not None
+    assert ds_ram.preloaded_labels is not None
+    assert ds_dev.preloaded_features is not None
+    assert ds_dev.preloaded_labels is not None
+
+    assert ds_ram.preloaded_features.shape == (6, 32, 143)
+    assert ds_dev.preloaded_features.shape == (6, 32, 143)
+
+    for i in range(len(ds_none)):
+        x_none, y_none = ds_none[i]
+        x_ram, y_ram = ds_ram[i]
+        x_dev, y_dev = ds_dev[i]
+
+        assert torch.allclose(x_none, x_ram)
+        assert torch.allclose(x_none, x_dev)
+        assert y_none == y_ram == y_dev
+
+
+def test_device_dataloader_behavior(tmp_path: Path) -> None:
+    split_csv, _ = _create_synthetic_split_dataset(tmp_path, num_samples=7, num_classes=2)
+    ds = ISRLandmarkDataset(split_csv=split_csv, preload="device", device="cpu", sequence_length=32, feature_dim=143)
+
+    # 1. Non-drop-last loader
+    loader = create_dataloader(ds, batch_size=3, shuffle=False, drop_last=False)
+    assert len(loader) == 3
+    assert loader.dataset is ds
+
+    batches = list(loader)
+    assert len(batches) == 3
+    assert batches[0][0].shape == (3, 32, 143)
+    assert batches[1][0].shape == (3, 32, 143)
+    assert batches[2][0].shape == (1, 32, 143)
+
+    # Multiple iterations have identical deterministic order
+    batches_again = list(loader)
+    assert torch.allclose(batches[0][0], batches_again[0][0])
+    assert torch.equal(batches[0][1], batches_again[0][1])
+
+    # 2. Drop-last loader
+    loader_dl = create_dataloader(ds, batch_size=3, shuffle=False, drop_last=True)
+    assert len(loader_dl) == 2
+    batches_dl = list(loader_dl)
+    assert len(batches_dl) == 2
+    assert batches_dl[0][0].shape == (3, 32, 143)
+    assert batches_dl[1][0].shape == (3, 32, 143)
+
+    # 3. Reproducible shuffling with seed
+    l_seed1 = create_dataloader(ds, batch_size=2, shuffle=True, seed=42)
+    l_seed2 = create_dataloader(ds, batch_size=2, shuffle=True, seed=42)
+    b1 = list(l_seed1)
+    b2 = list(l_seed2)
+    for (x1, y1), (x2, y2) in zip(b1, b2):
+        assert torch.allclose(x1, x2)
+        assert torch.equal(y1, y2)
+
+
+def test_preload_memory_limit_exceeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    split_csv, _ = _create_synthetic_split_dataset(tmp_path, num_samples=4, num_classes=2)
+    import src.data.dataset as ds_module
+
+    # Monkeypatch limit to 100 bytes so 4*32*143*4 bytes exceeds it
+    monkeypatch.setattr(ds_module, "MAX_PRELOAD_BYTES", 100)
+
+    with pytest.raises(ValueError, match="vượt quá giới hạn an toàn 4 GiB"):
+        ISRLandmarkDataset(split_csv=split_csv, preload="ram", sequence_length=32, feature_dim=143)
+
+
+def test_preload_corrupted_file_raises(tmp_path: Path) -> None:
+    split_csv, feat_dir = _create_synthetic_split_dataset(tmp_path, num_samples=3, num_classes=2)
+
+    # Corrupt one file to have ndim == 1
+    np.save(str(feat_dir / "seq_001.npy"), np.ones(50, dtype=np.float32))
+
+    with pytest.raises(ValueError, match="Feature array must be 2D"):
+        ISRLandmarkDataset(split_csv=split_csv, preload="ram", sequence_length=32, feature_dim=143)
+

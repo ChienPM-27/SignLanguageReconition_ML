@@ -107,6 +107,7 @@ def run_overfit_check(
         sequence_length=cfg.preprocess.sequence_length,
         feature_dim=expected_dim,
         strict=True,
+        preload="ram",
     )
 
     # Pick exactly 1 sample per gloss
@@ -193,6 +194,7 @@ def run_baseline_rf(
             sequence_length=cfg.preprocess.sequence_length,
             feature_dim=expected_dim,
             strict=True,
+            preload="ram",
         )
         x_list, y_list = [], []
         for idx in range(len(ds)):
@@ -270,6 +272,8 @@ def train_single_seed(
         sequence_length=cfg.preprocess.sequence_length,
         feature_dim=expected_dim,
         strict=True,
+        preload=cfg.training.preload,
+        device=device,
     )
     val_ds = ISRLandmarkDataset(
         split_csv=val_csv,
@@ -278,6 +282,8 @@ def train_single_seed(
         sequence_length=cfg.preprocess.sequence_length,
         feature_dim=expected_dim,
         strict=True,
+        preload=cfg.training.preload,
+        device=device,
     )
     test_ds = ISRLandmarkDataset(
         split_csv=test_csv,
@@ -286,6 +292,8 @@ def train_single_seed(
         sequence_length=cfg.preprocess.sequence_length,
         feature_dim=expected_dim,
         strict=True,
+        preload=cfg.training.preload,
+        device=device,
     )
 
     train_loader = create_dataloader(
@@ -293,6 +301,7 @@ def train_single_seed(
         batch_size=cfg.training.batch_size,
         shuffle=True,
         num_workers=cfg.training.num_workers,
+        seed=seed,
     )
     val_loader = create_dataloader(
         val_ds,

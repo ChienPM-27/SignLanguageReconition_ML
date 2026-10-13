@@ -174,3 +174,43 @@ def test_cli_train_pipeline_end_to_end(tmp_path: Path) -> None:
     assert (run_dir / "seed_42" / "test_report.json").is_file()
     assert (run_dir / "seed_42" / "confusion_matrix.png").is_file()
     assert (run_dir / "seed_42" / "learning_curves.png").is_file()
+
+
+def test_device_loader_train_one_epoch_smoke(tmp_path: Path) -> None:
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2)
+
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(
+        split_csv=train_csv,
+        sequence_length=32,
+        feature_dim=143,
+        preload="device",
+        device=device,
+    )
+    val_ds = ISRLandmarkDataset(
+        split_csv=val_csv,
+        sequence_length=32,
+        feature_dim=143,
+        preload="device",
+        device=device,
+    )
+
+    from src.data.dataset import create_dataloader
+    train_loader = create_dataloader(train_ds, batch_size=2, shuffle=True, seed=42)
+    val_loader = create_dataloader(val_ds, batch_size=2, shuffle=False)
+
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    loss, acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    assert loss >= 0.0
+    assert 0.0 <= acc <= 1.0
+
+    val_loss, top1, f1, y_pred, y_probs, y_true = evaluate_epoch(
+        model, val_loader, criterion, device, num_classes=2
+    )
+    assert val_loss >= 0.0
+    assert 0.0 <= top1 <= 1.0
+    assert len(y_true) == len(val_ds)
+
