@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 import sys
 import time
+from typing import Optional
 
 # Ensure repository root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -137,6 +138,7 @@ def draw_hand_landmarks(frame: np.ndarray, coords_2_21_3: np.ndarray, mask: np.n
 
 
 def run_realtime(
+    model_path: Optional[str | Path] = None,
     camera_id: int = 0,
     mode: str = "auto",
     confidence_threshold: float = 0.70,
@@ -144,7 +146,7 @@ def run_realtime(
 ) -> None:
     """Main real-time loop."""
     logger.info("Initializing ISLR Predictor...")
-    predictor = ISLRPredictor()
+    predictor = ISLRPredictor(model_path=model_path)
     extractor = MediaPipeHandExtractor()
 
     logger.info(f"Opening camera index {camera_id}...")
@@ -308,7 +310,11 @@ def run_realtime(
 
 
 if __name__ == "__main__":
+    default_model = Path("outputs/Kaggle_test/islr_phaseA_generalization_15.10.2026/outputs/runs/20261015_104434_exp_r2_aug/seed_42/best_model.pt")
+    default_model_str = str(default_model) if default_model.is_file() else None
+
     parser = argparse.ArgumentParser(description="Real-time ISLR Webcam Recognition")
+    parser.add_argument("--model", type=str, default=default_model_str, help="Path to best_model.pt checkpoint")
     parser.add_argument("--camera", type=int, default=0, help="Camera index (default: 0)")
     parser.add_argument("--mode", type=str, choices=["auto", "spacebar"], default="auto", help="Trigger mode")
     parser.add_argument("--threshold", type=float, default=0.70, help="Confidence threshold (default: 0.70)")
@@ -316,6 +322,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_realtime(
+        model_path=args.model,
         camera_id=args.camera,
         mode=args.mode,
         confidence_threshold=args.threshold,
