@@ -196,11 +196,15 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[KaggleCre
 
     # 4. Interactive fallback
     if allow_interactive:
-        # Colab interactive upload fallback
-        is_colab = (
+        # Distinguish Kaggle from Colab (Kaggle also has GCS env vars)
+        is_kaggle = (
+            os.path.exists("/kaggle")
+            or os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
+            or "kaggle_web_client" in sys.modules
+        )
+        is_colab = not is_kaggle and (
             "google.colab" in sys.modules
             or os.environ.get("COLAB_GPU") is not None
-            or os.environ.get("GCS_READ_CACHE") is not None
         )
         if is_colab:
             try:
@@ -231,8 +235,8 @@ def get_kaggle_credentials(allow_interactive: bool = True) -> Optional[KaggleCre
             except Exception:
                 pass
 
-        # Interactive terminal prompt fallback for local TTY
-        if sys.stdin.isatty():
+        # Interactive terminal prompt fallback for local TTY only (never in cloud notebooks)
+        if sys.stdin.isatty() and not is_colab and not is_kaggle:
             try:
                 import getpass
                 sys.stdout.write("Enter Kaggle Username (or press Enter if using token): ")
