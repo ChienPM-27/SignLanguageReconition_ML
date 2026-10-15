@@ -31,6 +31,7 @@ Thumbs.db
 # Generated reports & outputs (git-ignored except .gitkeep)
 reports/*
 !reports/.gitkeep
+!reports/training_fix_notes.md
 outputs/*
 !outputs/.gitkeep
 
