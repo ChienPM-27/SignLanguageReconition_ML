@@ -123,6 +123,18 @@ def test_absent_slot_preservation_numpy() -> None:
     assert np.array_equal(full_aug[absent_hand1, 63:126], features_143[absent_hand1, 63:126])
     assert np.array_equal(full_aug[absent_hand1, 129:132], features_143[absent_hand1, 129:132])
 
+    # 7. Additional coverage: Hand 0 absent and both hands absent
+    features_h0_absent = features_143.copy()
+    features_h0_absent[:, 141] = 0.0  # hand 0 absent
+    aug_h0 = apply_augmentation(features_h0_absent, cfg=aug_cfg)
+    assert np.array_equal(aug_h0[:, :63], features_h0_absent[:, :63])
+    assert np.array_equal(aug_h0[:, 126:129], features_h0_absent[:, 126:129])
+
+    features_both_absent = features_143.copy()
+    features_both_absent[:, 141:143] = 0.0  # both hands absent
+    aug_both = apply_augmentation(features_both_absent, cfg=aug_cfg)
+    assert np.array_equal(aug_both[:, :132], features_both_absent[:, :132])
+
 
 def test_absent_slot_preservation_torch() -> None:
     """Verify absent hand slots (mask <= 0.5) are strictly unchanged by all torch batch augmentations."""
@@ -170,6 +182,18 @@ def test_absent_slot_preservation_torch() -> None:
     assert torch.equal(full_aug_t[0, abs_indices, 63:126], x[0, abs_indices, 63:126])
     assert torch.equal(full_aug_t[0, abs_indices, 129:132], x[0, abs_indices, 129:132])
 
+    # 7. Additional coverage on batch tensor: Hand 0 absent and both hands absent
+    x_h0_absent = x.clone()
+    x_h0_absent[:, :, 141] = 0.0
+    aug_h0_t = apply_augmentation_batch(x_h0_absent, cfg=aug_cfg)
+    assert torch.equal(aug_h0_t[:, :, :63], x_h0_absent[:, :, :63])
+    assert torch.equal(aug_h0_t[:, :, 126:129], x_h0_absent[:, :, 126:129])
+
+    x_both_absent = x.clone()
+    x_both_absent[:, :, 141:143] = 0.0
+    aug_both_t = apply_augmentation_batch(x_both_absent, cfg=aug_cfg)
+    assert torch.equal(aug_both_t[:, :, :132], x_both_absent[:, :, :132])
+
 
 def test_recompute_derived_features_parity() -> None:
     """Verify recompute_derived_features reproduces exact [132:141] features from process_video_landmarks."""
@@ -187,19 +211,20 @@ def test_recompute_derived_features_parity() -> None:
 
 
 def test_double_flip_identity() -> None:
-    """Verify flipping twice with swap_hands=False is the exact identity mapping on present slots."""
+    """Verify flipping twice (both swap_hands=False and swap_hands=True) is exact identity mapping on present slots."""
     features_143, _, _ = _create_synthetic_video_landmarks_with_gaps()
-
-    # 1. Numpy
-    flip1 = horizontal_flip(features_143, swap_hands=False)
-    flip2 = horizontal_flip(flip1, swap_hands=False)
-    assert np.allclose(flip2, features_143, atol=1e-5)
-
-    # 2. Torch
     x_tensor = torch.from_numpy(features_143).unsqueeze(0)
-    flip1_t = batch_horizontal_flip(x_tensor, swap_hands=False)
-    flip2_t = batch_horizontal_flip(flip1_t, swap_hands=False)
-    assert torch.allclose(flip2_t, x_tensor, atol=1e-5)
+
+    for swap in [False, True]:
+        # 1. Numpy
+        flip1 = horizontal_flip(features_143, swap_hands=swap)
+        flip2 = horizontal_flip(flip1, swap_hands=swap)
+        assert np.allclose(flip2, features_143, atol=1e-5)
+
+        # 2. Torch
+        flip1_t = batch_horizontal_flip(x_tensor, swap_hands=swap)
+        flip2_t = batch_horizontal_flip(flip1_t, swap_hands=swap)
+        assert torch.allclose(flip2_t, x_tensor, atol=1e-5)
 
 
 def test_augmentation_parity_numpy_vs_torch() -> None:
@@ -213,32 +238,30 @@ def test_augmentation_parity_numpy_vs_torch() -> None:
         torch_flip = batch_horizontal_flip(x_tensor, swap_hands=swap).squeeze(0).cpu().numpy()
         assert np.allclose(np_flip, torch_flip, atol=1e-6)
 
-    # 2. Rotate with fixed angle
+    # 2. Rotate with fixed angle (tested as float and tensor)
     angle = 6.25
     np_rot = random_rotate_2d(features_143, angle_deg=angle)
-    torch_rot = batch_random_rotate_2d(x_tensor, angles_deg=torch.tensor([angle])).squeeze(0).cpu().numpy()
+    torch_rot = batch_random_rotate_2d(x_tensor, angles_deg=angle).squeeze(0).cpu().numpy()
     assert np.allclose(np_rot, torch_rot, atol=1e-6)
 
-    # 3. Shape scale with fixed factors
+    # 3. Shape scale with fixed factors (tested as float)
     sx, sy = 1.08, 0.94
     np_sh = shape_scale(features_143, sx=sx, sy=sy)
-    torch_sh = batch_shape_scale(
-        x_tensor,
-        sx=torch.tensor([sx], dtype=torch.float32),
-        sy=torch.tensor([sy], dtype=torch.float32),
-    ).squeeze(0).cpu().numpy()
+    torch_sh = batch_shape_scale(x_tensor, sx=sx, sy=sy).squeeze(0).cpu().numpy()
     assert np.allclose(np_sh, torch_sh, atol=1e-6)
 
-    # 4. Scale translate with fixed factors
+    # 4. Scale translate with fixed factors and t tuple / tensor
     s_val, tx, ty = 1.12, 0.05, -0.06
-    np_sc = scale_translate(features_143, s=s_val, tx=tx, ty=ty)
-    torch_sc = batch_scale_translate(
+    np_sc = scale_translate(features_143, s=s_val, t=(tx, ty))
+    torch_sc = batch_scale_translate(x_tensor, s=s_val, t=(tx, ty)).squeeze(0).cpu().numpy()
+    assert np.allclose(np_sc, torch_sc, atol=1e-6)
+
+    torch_sc_t = batch_scale_translate(
         x_tensor,
         s=torch.tensor([s_val], dtype=torch.float32),
-        tx=torch.tensor([tx], dtype=torch.float32),
-        ty=torch.tensor([ty], dtype=torch.float32),
+        t=torch.tensor([tx, ty], dtype=torch.float32),
     ).squeeze(0).cpu().numpy()
-    assert np.allclose(np_sc, torch_sc, atol=1e-6)
+    assert np.allclose(np_sc, torch_sc_t, atol=1e-6)
 
     # 5. Jitter with identical noise tensors
     noise_s = np.random.randn(32, 2, 21, 3).astype(np.float32) * 0.01
@@ -251,6 +274,39 @@ def test_augmentation_parity_numpy_vs_torch() -> None:
         noise_wrist=torch.from_numpy(noise_w).unsqueeze(0),
     ).squeeze(0).cpu().numpy()
     assert np.allclose(np_jit, torch_jit, atol=1e-6)
+
+
+def test_batch_scalar_and_broadcasting_inputs() -> None:
+    """Verify batch augmentations correctly broadcast scalar/float parameters across B > 1."""
+    features_143, _, _ = _create_synthetic_video_landmarks_with_gaps()
+    B = 3
+    x_batch = torch.from_numpy(features_143).unsqueeze(0).repeat(B, 1, 1)
+
+    # 1. Rotate with scalar float across B=3
+    rot_b = batch_random_rotate_2d(x_batch, angles_deg=8.0)
+    assert rot_b.shape == (B, 32, 143)
+    for b in range(1, B):
+        assert torch.equal(rot_b[b], rot_b[0])
+
+    # 2. Shape scale with scalar float across B=3
+    sh_b = batch_shape_scale(x_batch, sx=1.1, sy=0.9)
+    assert sh_b.shape == (B, 32, 143)
+    for b in range(1, B):
+        assert torch.equal(sh_b[b], sh_b[0])
+
+    # 3. Scale translate with scalar float and t tuple across B=3
+    st_b = batch_scale_translate(x_batch, s=1.15, t=(0.08, -0.05))
+    assert st_b.shape == (B, 32, 143)
+    for b in range(1, B):
+        assert torch.equal(st_b[b], st_b[0])
+
+    # 4. Jitter with unbatched noise tensors (T, 2, 21, 3) across B=3
+    noise_s = torch.randn(32, 2, 21, 3, dtype=torch.float32) * 0.01
+    noise_w = torch.randn(32, 2, 3, dtype=torch.float32) * 0.01
+    jit_b = batch_add_jitter(x_batch, noise_shape=noise_s, noise_wrist=noise_w)
+    assert jit_b.shape == (B, 32, 143)
+    for b in range(1, B):
+        assert torch.equal(jit_b[b], jit_b[0])
 
 
 def test_shape_and_dtype_preservation() -> None:

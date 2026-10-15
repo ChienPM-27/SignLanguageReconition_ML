@@ -12,16 +12,18 @@
 - **Sửa `random_rotate_2d`**: Xoay wrist quanh tâm $(0.5, 0.5)$ **chỉ cho tay có mặt**. Không biến đổi slot vắng (tránh làm lệch tọa độ nội suy gốc). Không tính lại velocity để giữ vận tốc sạch.
 - **Sửa `add_jitter`**: Cộng nhiễu Gaussian nhẹ **chỉ cho slot có mặt** (cả local shape và wrist). Không cộng nhiễu vào velocity hay rel wrist.
 - **Thêm `shape_scale`**: Tỷ lệ co giãn độc lập $s_x, s_y \sim U(1-r, 1+r)$ nhân vào local shape `[0:126]` cho tay có mặt. Mặc định $r=0.10$.
-- **Thêm `scale_translate`**: Tỷ lệ $s \sim U(\text{scale\_min}, \text{scale\_max})$ và độ dịch chuyển $t_x, t_y \sim U(-\text{translate}, +\text{translate})$ áp dụng cho wrist của tay có mặt: $w_{xy}' = (w_{xy} - 0.5) \cdot s + 0.5 + (t_x, t_y)$, $z$ giữ nguyên, sau đó gọi `recompute_derived_features`. Mặc định $\text{scale\_min}=0.85, \text{scale\_max}=1.15, \text{translate}=0.10$.
+- **Thêm `scale_translate`**: Tỷ lệ $s \sim U(\text{scale\_min}, \text{scale\_max})$ và độ dịch chuyển $t_x, t_y \sim U(-\text{translate}, +\text{translate})$ (hoặc tham số $t=(t_x, t_y)$) áp dụng cho wrist của tay có mặt: $w_{xy}' = (w_{xy} - 0.5) \cdot s + 0.5 + (t_x, t_y)$, $z$ giữ nguyên, sau đó gọi `recompute_derived_features`. Mặc định $\text{scale\_min}=0.85, \text{scale\_max}=1.15, \text{translate}=0.10$.
 - **Cập nhật `apply_augmentation`**: Áp dụng chuỗi biến đổi theo thứ tự chuẩn hóa:
   $$\text{flip} \longrightarrow \text{rotate} \longrightarrow \text{shape\_scale} \longrightarrow \text{scale\_translate} \longrightarrow \text{jitter}$$
 
 ### `src/data/augmentation_gpu.py` (PyTorch Batch GPU/CPU Pipeline)
 - **Helper `batch_recompute_derived_features(x)`**: Bản tính toán song song theo batch trên tensor `(B, T, D)`.
 - **Cập nhật `batch_horizontal_flip`**: Đồng bộ logic bảo toàn slot vắng, hoán đổi slot tay khi `swap_hands=True`, và gọi `batch_recompute_derived_features`.
-- **Cập nhật `batch_random_rotate_2d`**: Chỉ xoay wrist quanh $(0.5, 0.5)$ cho tay có mặt.
-- **Cập nhật `batch_add_jitter`**: Chỉ thêm nhiễu vào shape và wrist có mặt.
-- **Thêm `batch_shape_scale` & `batch_scale_translate`**: Đầy đủ tham số tường minh tùy chọn (`s, tx, ty, sx, sy`) phục vụ kiểm tra parity số học giữa numpy và torch.
+- **Cập nhật `batch_random_rotate_2d`**: Chỉ xoay wrist quanh $(0.5, 0.5)$ cho tay có mặt. Tự động broadcast các giá trị góc `angles_deg` dạng `float` hoặc scalar tensor qua toàn bộ batch $B \ge 1$.
+- **Cập nhật `batch_add_jitter`**: Chỉ thêm nhiễu vào shape và wrist có mặt. Hỗ trợ tự động chuyển đổi tensor nhiễu và broadcast nhiễu unbatched qua batch $B \ge 1$.
+- **Thêm `batch_shape_scale` & `batch_scale_translate`**:
+  - Đầy đủ tham số tường minh tùy chọn (`s, t, tx, ty, sx, sy`) phục vụ kiểm tra parity số học giữa numpy và torch.
+  - Hỗ trợ truyền tham số dạng số thực (`float`), tuple `t=(tx, ty)`, hoặc scalar tensor, tự động broadcast tương thích hoàn toàn trên batch tensor kích thước $B \ge 1$.
 - **Cập nhật `apply_augmentation_batch`**: Điều khiển qua `AugmentationConfig` theo đúng thứ tự như bản numpy.
 
 ### `src/utils/config.py`
@@ -45,7 +47,7 @@
 
 ### `tests/test_dataset.py` & `tests/test_augmentation.py`
 - Cập nhật `tests/test_dataset.py`: Đặt `mask=1.0` trên các mảng synthetic ngẫu nhiên để các kiểm thử cũ kiểm tra đúng logic toán học của phép biến đổi khi có tay.
-- Tạo mới `tests/test_augmentation.py` (8 test suites) bao phủ toàn bộ các yêu cầu của T4.
+- Tạo mới `tests/test_augmentation.py` (9 test suites) bao phủ toàn bộ các yêu cầu của T4, bổ sung kiểm tra vắng tay 0, vắng cả hai tay, lật gương 2 lần cho cả `swap_hands=True/False`, và broadcast tham số vô hướng trên batch tensor.
 - Tạo mới `tests/test_config.py::test_augmentation_config_and_overrides` xác thực việc phân tích cú pháp override lồng nhau.
 
 ---
@@ -53,24 +55,25 @@
 ## 2. Kết quả Pytest & Pyflakes
 
 - **Pyflakes**: Không còn cảnh báo hoặc biến/import không sử dụng (exit code 0 trên toàn bộ repo).
-- **Pytest**: Toàn bộ **185 tests** vượt qua thành công:
+- **Pytest**: Toàn bộ **186 tests** vượt qua thành công:
   ```text
-  collected 185 items
+  collected 186 items
   ........................................................................ [ 38%]
   ........................................................................ [ 77%]
-  .........................................                                [100%]
-  185 passed in 20.25s
+  ..........................................                               [100%]
+  186 passed in 20.37s
   ```
 
 ### Chi tiết các kiểm thử trong `tests/test_augmentation.py`:
-1. `test_absent_slot_preservation_numpy`: Bảo toàn giá trị slot vắng (kể cả khi wrist vắng có giá trị khác 0 do nội suy temporal resampling).
-2. `test_absent_slot_preservation_torch`: Bảo toàn giá trị slot vắng trên batch PyTorch tensor.
+1. `test_absent_slot_preservation_numpy`: Bảo toàn giá trị slot vắng (tay 1 vắng, tay 0 vắng, cả hai tay vắng; kể cả khi wrist vắng có giá trị khác 0 do nội suy temporal resampling).
+2. `test_absent_slot_preservation_torch`: Bảo toàn giá trị slot vắng trên batch PyTorch tensor (tay 1 vắng, tay 0 vắng, cả hai tay vắng).
 3. `test_recompute_derived_features_parity`: Kết quả `recompute_derived_features` khớp chính xác `[132:141]` sinh từ pipeline chuẩn `process_video_landmarks`.
-4. `test_double_flip_identity`: Lật gương 2 lần (`swap_hands=False`) là phép đồng nhất (identity mapping) trên slot có mặt, bảo toàn cả rel và vel.
+4. `test_double_flip_identity`: Lật gương 2 lần (cho cả `swap_hands=False` và `swap_hands=True`) là phép đồng nhất (identity mapping) trên slot có mặt, bảo toàn cả rel và vel.
 5. `test_augmentation_parity_numpy_vs_torch`: Parity số học tuyệt đối giữa numpy và torch cho từng phép biến đổi với tham số cố định (tolerance `1e-6`).
-6. `test_shape_and_dtype_preservation`: Đảm bảo kích thước `(T, 143)` và kiểu dữ liệu `float32` không bị biến đổi.
-7. `test_smoke_train_2_epochs_with_augmentation[ram]`: Huấn luyện thử nghiệm 2 epochs trên dữ liệu synthetic với `preload='ram'` và augmentation bật.
-8. `test_smoke_train_2_epochs_with_augmentation[device]`: Huấn luyện thử nghiệm 2 epochs trên dữ liệu synthetic với `preload='device'` và augmentation bật.
+6. `test_batch_scalar_and_broadcasting_inputs`: Kiểm tra batch augmentations hỗ trợ truyền tham số dạng số thực / scalar và broadcast đồng nhất trên toàn bộ batch $B > 1$.
+7. `test_shape_and_dtype_preservation`: Đảm bảo kích thước `(T, 143)` và kiểu dữ liệu `float32` không bị biến đổi.
+8. `test_smoke_train_2_epochs_with_augmentation[ram]`: Huấn luyện thử nghiệm 2 epochs trên dữ liệu synthetic với `preload='ram'` và augmentation bật.
+9. `test_smoke_train_2_epochs_with_augmentation[device]`: Huấn luyện thử nghiệm 2 epochs trên dữ liệu synthetic với `preload='device'` và augmentation bật.
 
 ---
 

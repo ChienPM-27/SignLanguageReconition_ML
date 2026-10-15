@@ -107,7 +107,7 @@ def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Te
         out[:, :, 141:143] = out[:, :, [142, 141]]
 
     # 4. Recompute derived features (rel [132:135] & vel [135:141])
-    if D >= 141:
+    if D >= 143:
         out = batch_recompute_derived_features(out)
 
     # 5. Pose landmarks nếu có (12 coords: left/right shoulder, left/right elbow)
@@ -123,7 +123,7 @@ def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Te
 def batch_random_rotate_2d(
     x: torch.Tensor,
     max_angle_deg: float = 8.0,
-    angles_deg: Optional[torch.Tensor] = None,
+    angles_deg: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
     """Xoay ngẫu nhiên độc lập từng mẫu trong mặt phẳng (x, y) trên batch (B, T, D).
@@ -139,6 +139,12 @@ def batch_random_rotate_2d(
     if angles_deg is None:
         rand_u = _rand((B,), out.device, generator)
         angles_deg = rand_u * (2.0 * max_angle_deg) - max_angle_deg
+    else:
+        angles_deg = torch.as_tensor(angles_deg, device=out.device, dtype=torch.float32)
+        if angles_deg.numel() == 1:
+            angles_deg = angles_deg.reshape(1).expand(B)
+        elif angles_deg.shape != (B,):
+            raise ValueError(f"angles_deg must have shape ({B},) or be a scalar, got {angles_deg.shape}")
 
     angles_rad = angles_deg * (math.pi / 180.0)
     cos_a = torch.cos(angles_rad)
@@ -154,7 +160,7 @@ def batch_random_rotate_2d(
         sx = shapes[:, :, :, :, 0].clone()
         sy = shapes[:, :, :, :, 1].clone()
         rot_x = sx * cos_m - sy * sin_m
-        rot_y = sx * sin_m + sy * cos_a.view(B, 1, 1, 1)
+        rot_y = sx * sin_m + sy * cos_m
         m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
         shapes[:, :, :, :, 0] = torch.where(m_s, rot_x, sx)
         shapes[:, :, :, :, 1] = torch.where(m_s, rot_y, sy)
@@ -179,8 +185,8 @@ def batch_random_rotate_2d(
 def batch_add_jitter(
     x: torch.Tensor,
     sigma: float = 0.01,
-    noise_shape: Optional[torch.Tensor] = None,
-    noise_wrist: Optional[torch.Tensor] = None,
+    noise_shape: Optional[Any] = None,
+    noise_wrist: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
     """Thêm nhiễu Gaussian nhẹ vào shape và wrist CHỈ cho slot có mặt trên batch (B, T, D).
@@ -197,18 +203,28 @@ def batch_add_jitter(
     # 1. Local shapes [0:126] -> (B, T, 2, 21, 3)
     if D >= 126:
         shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
-        if noise_shape is None:
-            noise_shape = _randn((B, T, 2, 21, 3), out.device, generator) * sigma
+        if noise_shape is not None:
+            noise_shape_t = torch.as_tensor(noise_shape, device=out.device, dtype=out.dtype)
+            if noise_shape_t.ndim == 4 and noise_shape_t.shape == (T, 2, 21, 3):
+                noise_shape_t = noise_shape_t.unsqueeze(0)
+        else:
+            noise_shape_t = _randn((B, T, 2, 21, 3), out.device, generator) * sigma
         m_s = mask.unsqueeze(-1).unsqueeze(-1)  # (B, T, 2, 1, 1)
-        shapes = torch.where(m_s, shapes + noise_shape, shapes)
+        shapes = torch.where(m_s, shapes + noise_shape_t, shapes)
         out[:, :, :126] = shapes.reshape(B, T, 126)
 
     # 2. Global wrists [126:132] -> (B, T, 2, 3)
     if D >= 132:
         wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
-        if noise_wrist is None:
-            noise_wrist = _randn((B, T, 2, 3), out.device, generator) * sigma
-        wrists = torch.where(mask.unsqueeze(-1), wrists + noise_wrist, wrists)
+        if noise_wrist is not None:
+            noise_wrist_t = torch.as_tensor(noise_wrist, device=out.device, dtype=out.dtype)
+            if noise_wrist_t.ndim == 2 and noise_wrist_t.shape == (T, 6):
+                noise_wrist_t = noise_wrist_t.reshape(T, 2, 3).unsqueeze(0)
+            elif noise_wrist_t.ndim == 3 and noise_wrist_t.shape == (T, 2, 3):
+                noise_wrist_t = noise_wrist_t.unsqueeze(0)
+        else:
+            noise_wrist_t = _randn((B, T, 2, 3), out.device, generator) * sigma
+        wrists = torch.where(mask.unsqueeze(-1), wrists + noise_wrist_t, wrists)
         out[:, :, 126:132] = wrists.reshape(B, T, 6)
 
     return out
@@ -217,8 +233,8 @@ def batch_add_jitter(
 def batch_shape_scale(
     x: torch.Tensor,
     r: float = 0.10,
-    sx: Optional[torch.Tensor] = None,
-    sy: Optional[torch.Tensor] = None,
+    sx: Optional[Any] = None,
+    sy: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
     """Co giãn độc lập trục x, y của local hand shapes [0:126] trên batch (B, T, D) cho tay có mặt.
@@ -232,8 +248,21 @@ def batch_shape_scale(
 
     if sx is None:
         sx = _rand((B,), out.device, generator) * (2.0 * r) + (1.0 - r)
+    else:
+        sx = torch.as_tensor(sx, device=out.device, dtype=torch.float32)
+        if sx.numel() == 1:
+            sx = sx.reshape(1).expand(B)
+        elif sx.shape != (B,):
+            raise ValueError(f"sx must have shape ({B},) or be a scalar, got {sx.shape}")
+
     if sy is None:
         sy = _rand((B,), out.device, generator) * (2.0 * r) + (1.0 - r)
+    else:
+        sy = torch.as_tensor(sy, device=out.device, dtype=torch.float32)
+        if sy.numel() == 1:
+            sy = sy.reshape(1).expand(B)
+        elif sy.shape != (B,):
+            raise ValueError(f"sy must have shape ({B},) or be a scalar, got {sy.shape}")
 
     sx_m = sx.view(B, 1, 1, 1)
     sy_m = sy.view(B, 1, 1, 1)
@@ -256,9 +285,10 @@ def batch_scale_translate(
     scale_min: float = 0.85,
     scale_max: float = 1.15,
     translate: float = 0.10,
-    s: Optional[torch.Tensor] = None,
-    tx: Optional[torch.Tensor] = None,
-    ty: Optional[torch.Tensor] = None,
+    s: Optional[Any] = None,
+    t: Optional[Any] = None,
+    tx: Optional[Any] = None,
+    ty: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
     """Co giãn và dịch chuyển cổ tay tuyệt đối (xy) trên batch (B, T, D) cho tay có mặt.
@@ -271,12 +301,47 @@ def batch_scale_translate(
     if B == 0 or D < 132:
         return out
 
+    if t is not None:
+        if isinstance(t, (tuple, list)):
+            if len(t) != 2:
+                raise ValueError(f"t must have 2 elements (tx, ty), got {len(t)}")
+            tx, ty = t[0], t[1]
+        else:
+            t_t = torch.as_tensor(t, device=out.device, dtype=torch.float32)
+            if t_t.numel() == 2:
+                t_flat = t_t.flatten()
+                tx, ty = t_flat[0], t_flat[1]
+            elif t_t.ndim == 2 and t_t.shape == (B, 2):
+                tx, ty = t_t[:, 0], t_t[:, 1]
+            else:
+                raise ValueError(f"t tensor must have shape (2,) or ({B}, 2), got {t_t.shape}")
+
     if s is None:
         s = _rand((B,), out.device, generator) * (scale_max - scale_min) + scale_min
+    else:
+        s = torch.as_tensor(s, device=out.device, dtype=torch.float32)
+        if s.numel() == 1:
+            s = s.reshape(1).expand(B)
+        elif s.shape != (B,):
+            raise ValueError(f"s must have shape ({B},) or be a scalar, got {s.shape}")
+
     if tx is None:
         tx = _rand((B,), out.device, generator) * (2.0 * translate) - translate
+    else:
+        tx = torch.as_tensor(tx, device=out.device, dtype=torch.float32)
+        if tx.numel() == 1:
+            tx = tx.reshape(1).expand(B)
+        elif tx.shape != (B,):
+            raise ValueError(f"tx must have shape ({B},) or be a scalar, got {tx.shape}")
+
     if ty is None:
         ty = _rand((B,), out.device, generator) * (2.0 * translate) - translate
+    else:
+        ty = torch.as_tensor(ty, device=out.device, dtype=torch.float32)
+        if ty.numel() == 1:
+            ty = ty.reshape(1).expand(B)
+        elif ty.shape != (B,):
+            raise ValueError(f"ty must have shape ({B},) or be a scalar, got {ty.shape}")
 
     s_m = s.view(B, 1, 1)
     tx_m = tx.view(B, 1, 1)
@@ -291,7 +356,7 @@ def batch_scale_translate(
     wrists[:, :, :, 1] = torch.where(mask, w_y, wrists[:, :, :, 1])
     out[:, :, 126:132] = wrists.reshape(B, T, 6)
 
-    if D >= 141:
+    if D >= 143:
         out = batch_recompute_derived_features(out)
 
     return out

@@ -145,7 +145,7 @@ def horizontal_flip(features: np.ndarray, swap_hands: bool = False) -> np.ndarra
         out[:, 141:143] = out[:, [142, 141]]
 
     # 4. Recompute derived features (rel [132:135] & vel [135:141])
-    if D >= 141:
+    if D >= 143:
         out = recompute_derived_features(out)
 
     # 5. Pose shoulder & elbow points if present (12 coords: left/right shoulder, left/right elbow)
@@ -196,6 +196,7 @@ def scale_translate(
     scale_max: float = 1.15,
     translate: float = 0.10,
     s: Optional[float] = None,
+    t: Optional[Any] = None,
     tx: Optional[float] = None,
     ty: Optional[float] = None,
 ) -> np.ndarray:
@@ -208,6 +209,13 @@ def scale_translate(
     T, D = out.shape
     if D < 132:
         return out
+
+    if t is not None:
+        if isinstance(t, (tuple, list, np.ndarray)) and len(t) == 2:
+            tx = float(t[0])
+            ty = float(t[1])
+        else:
+            raise ValueError(f"t must be a 2-element sequence (tx, ty), got {t}")
 
     if s is None:
         s = float(np.random.uniform(scale_min, scale_max))
@@ -225,7 +233,7 @@ def scale_translate(
     wrists[:, :, 1] = np.where(mask, w_y, wrists[:, :, 1])
     out[:, 126:132] = wrists.reshape(T, 6)
 
-    if D >= 141:
+    if D >= 143:
         out = recompute_derived_features(out)
 
     return out
