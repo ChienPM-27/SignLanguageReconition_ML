@@ -364,4 +364,25 @@ def test_training_extended_configs() -> None:
         load_config(overrides=["training.resume_checkpoint=''"])
 
 
+def test_augmentation_config_and_overrides() -> None:
+    """Verify AugmentationConfig dataclass and nested scalar overrides."""
+    cfg = load_config(
+        overrides=[
+            "augmentation.scale_translate.enabled=false",
+            "augmentation.scale_translate.scale_min=0.90",
+            "augmentation.shape_scale.enabled=false",
+            "augmentation.shape_scale.r=0.15",
+        ]
+    )
+    assert cfg.augmentation.scale_translate.get("enabled") is False
+    assert cfg.augmentation.scale_translate.get("scale_min") == 0.90
+    assert cfg.augmentation.shape_scale.get("enabled") is False
+    assert cfg.augmentation.shape_scale.get("r") == 0.15
+
+    # Test unknown subfield in augmentation section raises KeyError
+    with pytest.raises(KeyError, match="Unknown configuration key 'nonexistent'"):
+        load_config(overrides=["augmentation.nonexistent=123"])
+
+
+
 

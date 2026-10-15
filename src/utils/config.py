@@ -372,9 +372,32 @@ class AugmentationConfig:
     jitter: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "sigma": 0.01})
     rotate: Dict[str, Any] = field(default_factory=lambda: {"enabled": True, "prob": 0.5, "max_angle_deg": 8.0})
     time_stretch: Dict[str, Any] = field(default_factory=lambda: {"enabled": False, "prob": 0.3, "max_stretch": 0.2})
+    scale_translate: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "prob": 0.7,
+            "scale_min": 0.85,
+            "scale_max": 1.15,
+            "translate": 0.10,
+        }
+    )
+    shape_scale: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "prob": 0.5,
+            "r": 0.10,
+        }
+    )
 
     def validate(self) -> None:
-        for name, sub in [("flip", self.flip), ("jitter", self.jitter), ("rotate", self.rotate), ("time_stretch", self.time_stretch)]:
+        for name, sub in [
+            ("flip", self.flip),
+            ("jitter", self.jitter),
+            ("rotate", self.rotate),
+            ("time_stretch", self.time_stretch),
+            ("scale_translate", self.scale_translate),
+            ("shape_scale", self.shape_scale),
+        ]:
             if not isinstance(sub, dict):
                 raise TypeError(f"augmentation.{name} must be a dictionary.")
 

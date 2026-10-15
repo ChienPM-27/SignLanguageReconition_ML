@@ -214,6 +214,89 @@ def batch_add_jitter(
     return out
 
 
+def batch_shape_scale(
+    x: torch.Tensor,
+    r: float = 0.10,
+    sx: Optional[torch.Tensor] = None,
+    sy: Optional[torch.Tensor] = None,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    """Co giãn độc lập trục x, y của local hand shapes [0:126] trên batch (B, T, D) cho tay có mặt.
+
+    sx, sy ~ U(1 - r, 1 + r).
+    """
+    out = x.clone()
+    B, T, D = out.shape
+    if B == 0 or D < 126 or r <= 0.0:
+        return out
+
+    if sx is None:
+        sx = _rand((B,), out.device, generator) * (2.0 * r) + (1.0 - r)
+    if sy is None:
+        sy = _rand((B,), out.device, generator) * (2.0 * r) + (1.0 - r)
+
+    sx_m = sx.view(B, 1, 1, 1)
+    sy_m = sy.view(B, 1, 1, 1)
+
+    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
+
+    shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
+    sh_x = shapes[:, :, :, :, 0] * sx_m
+    sh_y = shapes[:, :, :, :, 1] * sy_m
+    shapes[:, :, :, :, 0] = torch.where(m_s, sh_x, shapes[:, :, :, :, 0])
+    shapes[:, :, :, :, 1] = torch.where(m_s, sh_y, shapes[:, :, :, :, 1])
+    out[:, :, :126] = shapes.reshape(B, T, 126)
+
+    return out
+
+
+def batch_scale_translate(
+    x: torch.Tensor,
+    scale_min: float = 0.85,
+    scale_max: float = 1.15,
+    translate: float = 0.10,
+    s: Optional[torch.Tensor] = None,
+    tx: Optional[torch.Tensor] = None,
+    ty: Optional[torch.Tensor] = None,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    """Co giãn và dịch chuyển cổ tay tuyệt đối (xy) trên batch (B, T, D) cho tay có mặt.
+
+    wrist_xy' = (wrist_xy - 0.5) * s + 0.5 + (tx, ty)
+    Sau đó batch_recompute_derived_features.
+    """
+    out = x.clone()
+    B, T, D = out.shape
+    if B == 0 or D < 132:
+        return out
+
+    if s is None:
+        s = _rand((B,), out.device, generator) * (scale_max - scale_min) + scale_min
+    if tx is None:
+        tx = _rand((B,), out.device, generator) * (2.0 * translate) - translate
+    if ty is None:
+        ty = _rand((B,), out.device, generator) * (2.0 * translate) - translate
+
+    s_m = s.view(B, 1, 1)
+    tx_m = tx.view(B, 1, 1)
+    ty_m = ty.view(B, 1, 1)
+
+    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+
+    wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
+    w_x = (wrists[:, :, :, 0] - 0.5) * s_m + 0.5 + tx_m
+    w_y = (wrists[:, :, :, 1] - 0.5) * s_m + 0.5 + ty_m
+    wrists[:, :, :, 0] = torch.where(mask, w_x, wrists[:, :, :, 0])
+    wrists[:, :, :, 1] = torch.where(mask, w_y, wrists[:, :, :, 1])
+    out[:, :, 126:132] = wrists.reshape(B, T, 6)
+
+    if D >= 141:
+        out = batch_recompute_derived_features(out)
+
+    return out
+
+
 def batch_time_stretch(
     x: torch.Tensor,
     max_stretch: float = 0.2,
@@ -255,7 +338,7 @@ def apply_augmentation_batch(
 ) -> torch.Tensor:
     """Áp dụng chuỗi biến đổi dữ liệu theo batch (B, T, D) trực tiếp trên device.
 
-    Thứ tự áp dụng: Flip -> Rotate -> Jitter -> Time Stretch.
+    Thứ tự áp dụng: Flip -> Rotate -> Shape Scale -> Scale Translate -> Jitter -> Time Stretch.
     Mỗi phép chọn độc lập theo từng mẫu qua mặt nạ Bernoulli(prob).
     """
     if cfg is None or x.shape[0] == 0:
@@ -267,6 +350,8 @@ def apply_augmentation_batch(
 
     flip_cfg = getattr(cfg, "flip", {}) if not isinstance(cfg, dict) else cfg.get("flip", {})
     rotate_cfg = getattr(cfg, "rotate", {}) if not isinstance(cfg, dict) else cfg.get("rotate", {})
+    shape_scale_cfg = getattr(cfg, "shape_scale", {}) if not isinstance(cfg, dict) else cfg.get("shape_scale", {})
+    scale_translate_cfg = getattr(cfg, "scale_translate", {}) if not isinstance(cfg, dict) else cfg.get("scale_translate", {})
     jitter_cfg = getattr(cfg, "jitter", {}) if not isinstance(cfg, dict) else cfg.get("jitter", {})
     stretch_cfg = getattr(cfg, "time_stretch", {}) if not isinstance(cfg, dict) else cfg.get("time_stretch", {})
 
@@ -292,7 +377,35 @@ def apply_augmentation_batch(
                     out[indices], max_angle_deg=max_angle, generator=generator
                 )
 
-    # 3. Jitter
+    # 3. Shape Scale
+    if _get_aug_param(shape_scale_cfg, "enabled", False):
+        prob = float(_get_aug_param(shape_scale_cfg, "prob", 0.5))
+        r = float(_get_aug_param(shape_scale_cfg, "r", 0.10))
+        if prob > 0.0 and r > 0.0:
+            mask = _rand((B,), device, generator) < prob
+            indices = torch.nonzero(mask).squeeze(1)
+            if len(indices) > 0:
+                out[indices] = batch_shape_scale(out[indices], r=r, generator=generator)
+
+    # 4. Scale & Translate
+    if _get_aug_param(scale_translate_cfg, "enabled", False):
+        prob = float(_get_aug_param(scale_translate_cfg, "prob", 0.7))
+        scale_min = float(_get_aug_param(scale_translate_cfg, "scale_min", 0.85))
+        scale_max = float(_get_aug_param(scale_translate_cfg, "scale_max", 1.15))
+        translate = float(_get_aug_param(scale_translate_cfg, "translate", 0.10))
+        if prob > 0.0:
+            mask = _rand((B,), device, generator) < prob
+            indices = torch.nonzero(mask).squeeze(1)
+            if len(indices) > 0:
+                out[indices] = batch_scale_translate(
+                    out[indices],
+                    scale_min=scale_min,
+                    scale_max=scale_max,
+                    translate=translate,
+                    generator=generator,
+                )
+
+    # 5. Jitter
     if _get_aug_param(jitter_cfg, "enabled", False):
         prob = float(_get_aug_param(jitter_cfg, "prob", 0.5))
         sigma = float(_get_aug_param(jitter_cfg, "sigma", 0.01))
@@ -302,7 +415,7 @@ def apply_augmentation_batch(
             if len(indices) > 0:
                 out[indices] = batch_add_jitter(out[indices], sigma=sigma, generator=generator)
 
-    # 4. Time Stretch
+    # 6. Time Stretch
     if _get_aug_param(stretch_cfg, "enabled", False):
         prob = float(_get_aug_param(stretch_cfg, "prob", 0.3))
         max_stretch = float(_get_aug_param(stretch_cfg, "max_stretch", 0.2))
