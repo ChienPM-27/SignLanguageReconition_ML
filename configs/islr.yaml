@@ -93,7 +93,7 @@ split:
 
 augmentation:
   flip:
-    enabled: false
+    enabled: true
     prob: 0.5
     swap_hands: false
   jitter:
@@ -108,6 +108,16 @@ augmentation:
     enabled: false
     prob: 0.3
     max_stretch: 0.2
+  scale_translate:
+    enabled: true
+    prob: 0.7
+    scale_min: 0.85
+    scale_max: 1.15
+    translate: 0.10
+  shape_scale:
+    enabled: true
+    prob: 0.5
+    r: 0.10
 
 model:
   name: "GRU"
