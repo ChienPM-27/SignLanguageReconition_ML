@@ -318,6 +318,8 @@ def run_preprocessing(
 
     # Read download manifest (or fallback to catalog if local mirror)
     download_manifest_path = paths.data_dir / "download_manifest.csv"
+    if not download_manifest_path.is_file() and (paths.persistent_root / "download_manifest.csv").is_file():
+        download_manifest_path = paths.persistent_root / "download_manifest.csv"
     items_to_process: List[Dict[str, Any]] = []
 
     if download_manifest_path.is_file():

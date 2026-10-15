@@ -125,7 +125,8 @@ def download_target_gloss_data(
 ) -> Tuple[Path, List[DownloadRecord]]:
     """Download landmark parquet files for selected glosses according to config budget."""
     dest_data_dir = paths.data_dir
-    dest_data_dir.mkdir(parents=True, exist_ok=True)
+    if not paths.is_kaggle_input_readonly:
+        dest_data_dir.mkdir(parents=True, exist_ok=True)
     selection_dir = paths.selection_dir
     selection_dir.mkdir(parents=True, exist_ok=True)
 
@@ -230,7 +231,8 @@ def download_target_gloss_data(
         raise KaggleCredentialsNotFoundError(auth_rule_error_encountered)
 
     # 7. Write download manifest
-    manifest_path = paths.data_dir / "download_manifest.csv"
+    manifest_dir = paths.persistent_root if paths.is_kaggle_input_readonly else paths.data_dir
+    manifest_path = manifest_dir / "download_manifest.csv"
     with open(manifest_path, mode="w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([

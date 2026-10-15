@@ -170,3 +170,19 @@ def test_resolved_paths_to_dict() -> None:
     assert "data_dir" in paths_dict
     assert "selection_dir" in paths_dict
     assert paths_dict["env_name"] == ENV_LOCAL
+
+
+def test_resolve_paths_kaggle_competitions_subfolder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify Kaggle path detection chooses competitions/ subfolder if it exists."""
+    cfg = load_config()
+    orig_exists = Path.exists
+
+    def mock_exists(self: Path) -> bool:
+        if self.as_posix() == f"/kaggle/input/competitions/{cfg.data.competition_id}":
+            return True
+        return orig_exists(self)
+
+    monkeypatch.setattr(Path, "exists", mock_exists)
+    paths = resolve_paths(ENV_KAGGLE, cfg, create_dirs=False)
+    assert paths.data_dir == Path("/kaggle/input/competitions") / cfg.data.competition_id
+

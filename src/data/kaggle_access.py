@@ -418,6 +418,25 @@ def fetch_file(
             relocated=False,
         )
 
+    # 2.1 Check alternative Kaggle mount paths (e.g. /kaggle/input/competitions/ vs /kaggle/input/)
+    str_target = str(target_path)
+    if "/kaggle/input/" in str_target:
+        alt_paths = []
+        if "/kaggle/input/competitions/" in str_target:
+            alt_paths.append(Path(str_target.replace("/kaggle/input/competitions/", "/kaggle/input/")))
+        else:
+            alt_paths.append(Path(str_target.replace("/kaggle/input/", "/kaggle/input/competitions/")))
+        for alt_path in alt_paths:
+            if alt_path.is_file() and alt_path.stat().st_size > EMPTY_FILE_SIZE_BYTES:
+                if logger:
+                    logger.info("Cache hit for '%s' at alternative Kaggle path: %s.", normalized_remote_path, alt_path)
+                return FetchResult(
+                    path=alt_path,
+                    source="cache",
+                    delivered_as=None,
+                    relocated=False,
+                )
+
     # Clean up empty/corrupted zero-byte target if left by prior failed attempt
     if target_path.is_file() and target_path.stat().st_size == EMPTY_FILE_SIZE_BYTES:
         target_path.unlink(missing_ok=True)

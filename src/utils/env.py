@@ -154,7 +154,11 @@ def resolve_paths(
     if effective_env == ENV_KAGGLE:
         repo_root = package_repo_root
         persistent_root = Path(KAGGLE_WORKING_DIR)
-        data_dir = Path(KAGGLE_INPUT_DIR) / cfg.data.competition_id
+        comp_dir = Path(KAGGLE_INPUT_DIR) / "competitions" / cfg.data.competition_id
+        if comp_dir.exists():
+            data_dir = comp_dir
+        else:
+            data_dir = Path(KAGGLE_INPUT_DIR) / cfg.data.competition_id
         configured_cache = Path(cfg.data.cache_dir)
         cache_dir = configured_cache if configured_cache.is_absolute() else Path(KAGGLE_TEMP_DIR) / configured_cache
         output_dir = persistent_root / cfg.output.output_dir

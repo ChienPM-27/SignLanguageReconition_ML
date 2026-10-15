@@ -139,7 +139,8 @@ def select_20_glosses(
         (selected_candidates, glosses_csv_path, report_md_path)
     """
     dest_data_dir = paths.data_dir
-    dest_data_dir.mkdir(parents=True, exist_ok=True)
+    if not paths.is_kaggle_input_readonly:
+        dest_data_dir.mkdir(parents=True, exist_ok=True)
     selection_dir = paths.selection_dir
     selection_dir.mkdir(parents=True, exist_ok=True)
 
