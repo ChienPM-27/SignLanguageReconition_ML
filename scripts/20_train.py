@@ -332,6 +332,7 @@ def train_single_seed(
     )
 
     ckpt_path = run_dir / "best_model.pt"
+    metrics_csv_path = run_dir / "train_metrics.csv"
 
     history = train_gru(
         model=model,
@@ -342,8 +343,12 @@ def train_single_seed(
         weight_decay=cfg.training.weight_decay,
         label_smoothing=cfg.training.label_smoothing,
         patience=cfg.training.patience,
+        early_stopping_min_delta=cfg.training.early_stopping_min_delta,
+        early_stopping_min_epochs=cfg.training.early_stopping_min_epochs,
         device=device,
         checkpoint_path=ckpt_path,
+        resume_checkpoint_path=cfg.training.resume_checkpoint,
+        metrics_csv_path=metrics_csv_path,
         verbose=True,
         grad_clip=cfg.training.grad_clip,
         scheduler_cfg=cfg.training.scheduler,
@@ -390,9 +395,12 @@ def run_training_pipeline(
     overfit_check: bool = False,
     baseline_rf: bool = False,
     seeds_override: Optional[List[int]] = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute training workflow based on validated config."""
     cfg = load_config(config_path=config_path, overrides=overrides)
+    if resume is not None:
+        cfg.training.resume_checkpoint = resume
     paths = resolve_paths(detect_env(), cfg, create_dirs=True)
     device = select_device(cfg.training.device)
     commit_hash = get_git_commit_hash()
@@ -500,6 +508,7 @@ def main() -> int:
     parser.add_argument("--overfit-check", action="store_true", help="Run 1 sample/gloss sanity overfit test")
     parser.add_argument("--baseline-rf", action="store_true", help="Run Random Forest tabular baseline")
     parser.add_argument("--seeds", nargs="+", type=int, default=None, help="Override list of training seeds")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint file to resume training from")
 
     args = parser.parse_args()
 
@@ -510,6 +519,7 @@ def main() -> int:
             overfit_check=args.overfit_check,
             baseline_rf=args.baseline_rf,
             seeds_override=args.seeds,
+            resume=args.resume,
         )
     except Exception as exc:
         logger.error(f"Training pipeline execution failed: {exc}", exc_info=True)

@@ -21,7 +21,14 @@ run_training_pipeline = train_module.run_training_pipeline
 
 from src.data.dataset import ISRLandmarkDataset
 from src.models.gru import ASLGRUClassifier
-from src.training.train import create_scheduler, evaluate_epoch, train_one_epoch
+from src.training.train import (
+    create_scheduler,
+    evaluate_epoch,
+    load_checkpoint,
+    save_checkpoint,
+    train_gru,
+    train_one_epoch,
+)
 from src.utils.config import load_config
 
 
@@ -171,6 +178,7 @@ def test_cli_train_pipeline_end_to_end(tmp_path: Path) -> None:
     assert (run_dir / "resolved_config.yaml").is_file()
     assert (run_dir / "multi_seed_summary.json").is_file()
     assert (run_dir / "seed_42" / "best_model.pt").is_file()
+    assert (run_dir / "seed_42" / "train_metrics.csv").is_file()
     assert (run_dir / "seed_42" / "test_report.json").is_file()
     assert (run_dir / "seed_42" / "confusion_matrix.png").is_file()
     assert (run_dir / "seed_42" / "learning_curves.png").is_file()
@@ -213,4 +221,142 @@ def test_device_loader_train_one_epoch_smoke(tmp_path: Path) -> None:
     assert val_loss >= 0.0
     assert 0.0 <= top1 <= 1.0
     assert len(y_true) == len(val_ds)
+
+
+def test_train_metrics_csv_streaming_and_flush(tmp_path: Path) -> None:
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+    csv_path = tmp_path / "custom_metrics.csv"
+    ckpt_path = tmp_path / "custom_best.pt"
+
+    history = train_gru(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=3,
+        device=device,
+        checkpoint_path=ckpt_path,
+        metrics_csv_path=csv_path,
+        verbose=False,
+    )
+    assert len(history["train_loss"]) == 3
+    assert csv_path.is_file()
+    with open(csv_path, mode="r", encoding="utf-8") as f:
+        reader = list(csv.reader(f))
+    assert len(reader) == 4  # Header + 3 epochs
+    assert reader[0] == ["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_f1", "lr"]
+    assert reader[1][0] == "1"
+    assert reader[3][0] == "3"
+    assert ckpt_path.is_file()
+
+
+def test_save_load_checkpoint_and_resume(tmp_path: Path) -> None:
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+    ckpt_path = tmp_path / "stage1_best.pt"
+    csv_path = tmp_path / "stage1_metrics.csv"
+
+    # Train for 2 epochs
+    h1 = train_gru(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=2,
+        device=device,
+        checkpoint_path=ckpt_path,
+        metrics_csv_path=csv_path,
+        verbose=False,
+    )
+    assert len(h1["train_loss"]) == 2
+    assert ckpt_path.is_file()
+
+    # Explicit direct save_checkpoint test
+    direct_ckpt_path = tmp_path / "direct_save.pt"
+    opt = torch.optim.Adam(model.parameters(), lr=0.001)
+    saved_p = save_checkpoint(
+        checkpoint_path=direct_ckpt_path,
+        model=model,
+        optimizer=opt,
+        scheduler=None,
+        scaler=None,
+        epoch=2,
+        best_val_loss=0.5,
+        best_val_acc=0.8,
+        patience_counter=0,
+        early_stopping_best=0.5,
+        history=h1,
+    )
+    assert saved_p.is_file()
+    direct_loaded = load_checkpoint(direct_ckpt_path)
+    assert direct_loaded["epoch"] == 2
+    assert direct_loaded["best_val_loss"] == 0.5
+
+    # Load and verify stateful checkpoint structure
+    ckpt_dict = load_checkpoint(ckpt_path)
+    assert "epoch" in ckpt_dict
+    assert "model_state_dict" in ckpt_dict
+    assert "optimizer_state_dict" in ckpt_dict
+    assert "best_val_loss" in ckpt_dict
+
+    # Resume training for 2 more epochs (target epochs=4)
+    model2 = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+    h2 = train_gru(
+        model=model2,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=4,
+        device=device,
+        checkpoint_path=ckpt_path,
+        resume_checkpoint_path=ckpt_path,
+        metrics_csv_path=csv_path,
+        verbose=False,
+    )
+    assert len(h2["train_loss"]) == 4
+
+    # Check metrics CSV has 4 epochs recorded
+    with open(csv_path, mode="r", encoding="utf-8") as f:
+        reader = list(csv.reader(f))
+    assert len(reader) == 5  # header + 4 epochs
+    assert reader[4][0] == "4"
+
+
+def test_early_stopping_min_delta_and_min_epochs(tmp_path: Path) -> None:
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+
+    # Test early_stopping_min_epochs: patience=1, min_epochs=4, should not stop before epoch 4
+    h = train_gru(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=8,
+        patience=1,
+        early_stopping_min_delta=100.0,  # virtually impossible to improve by 100
+        early_stopping_min_epochs=4,
+        device=device,
+        verbose=False,
+    )
+    # Should run at least 4 epochs because min_epochs=4
+    assert len(h["train_loss"]) >= 4
 

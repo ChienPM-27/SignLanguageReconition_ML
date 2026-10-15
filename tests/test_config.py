@@ -336,4 +336,32 @@ def test_training_preload_config() -> None:
         load_config(overrides=["training.preload=invalid_mode"])
 
 
+def test_training_extended_configs() -> None:
+    """Verify early_stopping_min_delta, early_stopping_min_epochs, and resume_checkpoint."""
+    cfg = load_config()
+    assert cfg.training.early_stopping_min_delta == 0.0001
+    assert cfg.training.early_stopping_min_epochs == 5
+    assert cfg.training.resume_checkpoint is None
+
+    # Test overrides
+    c2 = load_config(overrides=[
+        "training.early_stopping_min_delta=0.01",
+        "training.early_stopping_min_epochs=10",
+        "training.resume_checkpoint=model_checkpoints/ckpt.pt",
+    ])
+    assert c2.training.early_stopping_min_delta == 0.01
+    assert c2.training.early_stopping_min_epochs == 10
+    assert c2.training.resume_checkpoint == "model_checkpoints/ckpt.pt"
+
+    # Test validations
+    with pytest.raises(ValueError, match="training.early_stopping_min_delta must be a float >= 0."):
+        load_config(overrides=["training.early_stopping_min_delta=-0.1"])
+
+    with pytest.raises(ValueError, match="training.early_stopping_min_epochs must be an integer >= 0."):
+        load_config(overrides=["training.early_stopping_min_epochs=-5"])
+
+    with pytest.raises(ValueError, match="training.resume_checkpoint must be None or a non-empty string."):
+        load_config(overrides=["training.resume_checkpoint=''"])
+
+
 

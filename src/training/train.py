@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -153,6 +154,80 @@ def create_scheduler(
         return sched, "metric"
 
 
+def save_checkpoint(
+    checkpoint_path: str | Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[Any],
+    scaler: Optional[Any],
+    epoch: int,
+    best_val_loss: float,
+    best_val_acc: float,
+    patience_counter: int,
+    early_stopping_best: float,
+    history: Dict[str, list],
+) -> Path:
+    """Lưu stateful checkpoint phục vụ khả năng resume hoàn chỉnh."""
+    path = Path(checkpoint_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": copy.deepcopy(model.state_dict()),
+        "optimizer_state_dict": copy.deepcopy(optimizer.state_dict()),
+        "scheduler_state_dict": copy.deepcopy(scheduler.state_dict()) if scheduler is not None else None,
+        "scaler_state_dict": copy.deepcopy(scaler.state_dict()) if scaler is not None else None,
+        "best_val_loss": best_val_loss,
+        "best_val_acc": best_val_acc,
+        "patience_counter": patience_counter,
+        "early_stopping_best": early_stopping_best,
+        "history": copy.deepcopy(history),
+    }
+    torch.save(payload, str(path))
+    return path
+
+
+def load_checkpoint(
+    checkpoint_path: str | Path,
+    model: Optional[nn.Module] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    scaler: Optional[Any] = None,
+    device: Optional[torch.device] = None,
+) -> Dict[str, Any]:
+    """Tải checkpoint (hỗ trợ cả stateful dict và raw state_dict)."""
+    path = Path(checkpoint_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Checkpoint file not found: {path}")
+
+    target_device = device if device is not None else torch.device("cpu")
+    ckpt = torch.load(str(path), map_location=target_device, weights_only=False)
+
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        if model is not None:
+            model.load_state_dict(ckpt["model_state_dict"])
+        if optimizer is not None and ckpt.get("optimizer_state_dict") is not None:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if scaler is not None and ckpt.get("scaler_state_dict") is not None:
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
+        return ckpt
+    elif isinstance(ckpt, dict):
+        if model is not None:
+            model.load_state_dict(ckpt)
+        return {
+            "epoch": 0,
+            "model_state_dict": ckpt,
+            "best_val_loss": float("inf"),
+            "best_val_acc": 0.0,
+            "patience_counter": 0,
+            "early_stopping_best": float("inf"),
+            "history": {},
+        }
+    else:
+        raise ValueError(f"Unrecognized checkpoint format at {path}")
+
+
 def train_gru(
     model: nn.Module,
     train_loader: DataLoader,
@@ -162,14 +237,18 @@ def train_gru(
     weight_decay: float = 1e-4,
     label_smoothing: float = 0.1,
     patience: int = 15,
+    early_stopping_min_delta: float = 0.0001,
+    early_stopping_min_epochs: int = 0,
     device: torch.device = torch.device("cpu"),
     checkpoint_path: Optional[str | Path] = None,
+    resume_checkpoint_path: Optional[str | Path] = None,
+    metrics_csv_path: Optional[str | Path] = None,
     verbose: bool = True,
     grad_clip: float = 1.0,
     scheduler_cfg: Optional[Dict[str, Any]] = None,
     amp: bool = False,
 ) -> Dict[str, list]:
-    """Huấn luyện mô hình GRU với Early Stopping và lưu Checkpoint."""
+    """Huấn luyện mô hình GRU với Stateful Checkpoint, Resume, CSV metric streaming và Early Stopping cải tiến."""
     model.to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -183,6 +262,8 @@ def train_gru(
     best_val_acc = 0.0
     best_weights = copy.deepcopy(model.state_dict())
     patience_counter = 0
+    start_epoch = 1
+    early_stopping_best = float("inf")
 
     history: Dict[str, list] = {
         "train_loss": [], "train_acc": [],
@@ -190,58 +271,134 @@ def train_gru(
         "lr": [],
     }
 
-    t0 = time.time()
-    for ep in range(1, epochs + 1):
-        tr_loss, tr_acc = train_one_epoch(
+    # Phục hồi trạng thái huấn luyện nếu có resume_checkpoint_path
+    if resume_checkpoint_path is not None and Path(resume_checkpoint_path).is_file():
+        ckpt_info = load_checkpoint(
+            checkpoint_path=resume_checkpoint_path,
             model=model,
-            dataloader=train_loader,
-            criterion=criterion,
             optimizer=optimizer,
-            device=device,
-            grad_clip=grad_clip,
+            scheduler=scheduler,
             scaler=scaler,
-        )
-        val_loss, val_acc, val_f1, _, _, _ = evaluate_epoch(
-            model=model,
-            dataloader=val_loader,
-            criterion=criterion,
             device=device,
-            num_classes=model.num_classes,
         )
+        saved_epoch = int(ckpt_info.get("epoch", 0))
+        start_epoch = saved_epoch + 1
+        best_val_loss = float(ckpt_info.get("best_val_loss", float("inf")))
+        best_val_acc = float(ckpt_info.get("best_val_acc", 0.0))
+        patience_counter = int(ckpt_info.get("patience_counter", 0))
+        early_stopping_best = float(ckpt_info.get("early_stopping_best", best_val_loss))
+        best_weights = copy.deepcopy(model.state_dict())
+        saved_hist = ckpt_info.get("history")
+        if isinstance(saved_hist, dict):
+            for k in history:
+                if k in saved_hist and isinstance(saved_hist[k], list):
+                    history[k] = list(saved_hist[k])
+        if verbose:
+            print(f"Resumed from checkpoint: {resume_checkpoint_path} (epoch {saved_epoch}, best_val_loss={best_val_loss:.4f})")
 
-        current_lr = optimizer.param_groups[0]["lr"]
-        if sched_mode == "metric" and scheduler is not None:
-            scheduler.step(val_loss)
-        elif sched_mode == "epoch" and scheduler is not None:
-            scheduler.step()
+    # Khởi tạo CSV Streaming cho metrics nếu có đường dẫn
+    if metrics_csv_path is None and checkpoint_path is not None:
+        metrics_csv_path = Path(checkpoint_path).parent / "train_metrics.csv"
 
-        history["train_loss"].append(tr_loss)
-        history["train_acc"].append(tr_acc)
-        history["val_loss"].append(val_loss)
-        history["val_acc"].append(val_acc)
-        history["val_f1"].append(val_f1)
-        history["lr"].append(current_lr)
+    csv_file = None
+    csv_writer = None
+    if metrics_csv_path is not None:
+        csv_p = Path(metrics_csv_path)
+        csv_p.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = csv_p.is_file() and csv_p.stat().st_size > 0
+        open_mode = "a" if (file_exists and resume_checkpoint_path is not None) else "w"
+        csv_file = open(csv_p, mode=open_mode, encoding="utf-8", newline="")
+        csv_writer = csv.writer(csv_file)
+        if open_mode == "w" or not file_exists:
+            csv_writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "val_f1", "lr"])
+            csv_file.flush()
 
-        is_best = val_loss < best_val_loss
-        if is_best:
-            best_val_loss = val_loss
-            best_val_acc = val_acc
-            best_weights = copy.deepcopy(model.state_dict())
-            patience_counter = 0
-            if checkpoint_path:
-                Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
-                torch.save(best_weights, str(checkpoint_path))
-        else:
-            patience_counter += 1
-
-        if verbose and (ep % 5 == 0 or ep == 1 or is_best or patience_counter >= patience):
-            star = " (*)" if is_best else ""
-            print(f"Epoch {ep:2d}/{epochs} | Train Loss: {tr_loss:.4f} Acc: {tr_acc:.3f} | Val Loss: {val_loss:.4f} Acc: {val_acc:.3f} F1: {val_f1:.3f} | lr: {current_lr:.6f}{star}")
-
-        if patience_counter >= patience:
+    t0 = time.time()
+    try:
+        if start_epoch > epochs:
             if verbose:
-                print(f"Early Stopping tại epoch {ep} (patience={patience}). Best Val Loss: {best_val_loss:.4f}")
-            break
+                print(f"Training already completed up to epoch {start_epoch - 1} >= target epochs {epochs}.")
+        else:
+            for ep in range(start_epoch, epochs + 1):
+                tr_loss, tr_acc = train_one_epoch(
+                    model=model,
+                    dataloader=train_loader,
+                    criterion=criterion,
+                    optimizer=optimizer,
+                    device=device,
+                    grad_clip=grad_clip,
+                    scaler=scaler,
+                )
+                val_loss, val_acc, val_f1, _, _, _ = evaluate_epoch(
+                    model=model,
+                    dataloader=val_loader,
+                    criterion=criterion,
+                    device=device,
+                    num_classes=model.num_classes,
+                )
+
+                current_lr = optimizer.param_groups[0]["lr"]
+                if sched_mode == "metric" and scheduler is not None:
+                    scheduler.step(val_loss)
+                elif sched_mode == "epoch" and scheduler is not None:
+                    scheduler.step()
+
+                history["train_loss"].append(tr_loss)
+                history["train_acc"].append(tr_acc)
+                history["val_loss"].append(val_loss)
+                history["val_acc"].append(val_acc)
+                history["val_f1"].append(val_f1)
+                history["lr"].append(current_lr)
+
+                # Ghi metric real-time ra CSV và flush ngay lập tức
+                if csv_writer is not None and csv_file is not None:
+                    csv_writer.writerow([ep, f"{tr_loss:.6f}", f"{tr_acc:.4f}", f"{val_loss:.6f}", f"{val_acc:.4f}", f"{val_f1:.4f}", f"{current_lr:.8f}"])
+                    csv_file.flush()
+
+                is_best = val_loss < best_val_loss
+                if is_best:
+                    best_val_loss = val_loss
+                    best_val_acc = val_acc
+                    best_weights = copy.deepcopy(model.state_dict())
+
+                # Kiểm tra cải thiện theo min_delta cho early stopping
+                if (early_stopping_best - val_loss) >= early_stopping_min_delta:
+                    early_stopping_best = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if is_best and checkpoint_path:
+                    save_checkpoint(
+                        checkpoint_path=checkpoint_path,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        scaler=scaler,
+                        epoch=ep,
+                        best_val_loss=best_val_loss,
+                        best_val_acc=best_val_acc,
+                        patience_counter=patience_counter,
+                        early_stopping_best=early_stopping_best,
+                        history=history,
+                    )
+
+                if verbose and (ep % 5 == 0 or ep == 1 or is_best or patience_counter >= patience):
+                    star = " (*)" if is_best else ""
+                    print(f"Epoch {ep:2d}/{epochs} | Train Loss: {tr_loss:.4f} Acc: {tr_acc:.3f} | Val Loss: {val_loss:.4f} Acc: {val_acc:.3f} F1: {val_f1:.3f} | lr: {current_lr:.6f}{star}")
+
+                # Kích hoạt Early Stopping nếu đã vượt qua early_stopping_min_epochs
+                if patience_counter >= patience and ep >= early_stopping_min_epochs:
+                    if verbose:
+                        print(
+                            f"Early Stopping tại epoch {ep} (patience={patience}, "
+                            f"min_delta={early_stopping_min_delta}, min_epochs={early_stopping_min_epochs}). "
+                            f"Best Val Loss: {best_val_loss:.4f}"
+                        )
+                    break
+    finally:
+        if csv_file is not None:
+            csv_file.close()
 
     # Load lại trọng số tốt nhất
     model.load_state_dict(best_weights)

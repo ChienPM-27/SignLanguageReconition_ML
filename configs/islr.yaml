@@ -124,6 +124,8 @@ training:
   label_smoothing: 0.1
   epochs: 60
   patience: 15
+  early_stopping_min_delta: 0.0001 # Cải thiện tối thiểu để reset patience early stopping
+  early_stopping_min_epochs: 5    # Số epoch tối thiểu chạy trước khi cho phép Early Stopping
   scheduler:
     type: "plateau"
     factor: 0.5
@@ -137,6 +139,7 @@ training:
   amp: false
   num_workers: 0                  # Số worker DataLoader (bị bỏ qua khi training.preload='device')
   device: "auto"
+  resume_checkpoint: null         # Đường dẫn checkpoint để tiếp tục huấn luyện (null nếu train mới)
 
 run:
   name: "gru_baseline"

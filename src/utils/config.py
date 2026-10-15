@@ -409,6 +409,8 @@ class TrainingConfig:
     label_smoothing: float = 0.1
     epochs: int = 60
     patience: int = 15
+    early_stopping_min_delta: float = 0.0001
+    early_stopping_min_epochs: int = 0
     scheduler: Dict[str, Any] = field(default_factory=lambda: {"type": "plateau", "factor": 0.5, "patience": 5})
     grad_clip: float = 1.0
     num_seeds: int = 3
@@ -416,6 +418,7 @@ class TrainingConfig:
     amp: bool = False
     num_workers: int = 0
     device: str = "auto"
+    resume_checkpoint: Optional[str] = None
 
     def validate(self) -> None:
         if self.preload not in {"none", "ram", "device"}:
@@ -432,6 +435,10 @@ class TrainingConfig:
             raise ValueError("training.epochs must be an integer >= 1.")
         if type(self.patience) is bool or not isinstance(self.patience, int) or self.patience < 1:
             raise ValueError("training.patience must be an integer >= 1.")
+        if not isinstance(self.early_stopping_min_delta, (int, float)) or self.early_stopping_min_delta < 0:
+            raise ValueError("training.early_stopping_min_delta must be a float >= 0.")
+        if type(self.early_stopping_min_epochs) is bool or not isinstance(self.early_stopping_min_epochs, int) or self.early_stopping_min_epochs < 0:
+            raise ValueError("training.early_stopping_min_epochs must be an integer >= 0.")
         if not isinstance(self.scheduler, dict):
             raise TypeError("training.scheduler must be a dictionary.")
         if not isinstance(self.grad_clip, (int, float)) or self.grad_clip <= 0:
@@ -446,6 +453,9 @@ class TrainingConfig:
             raise ValueError("training.num_workers must be an integer >= 0.")
         if not isinstance(self.device, str) or not self.device.strip():
             raise ValueError("training.device must be a non-empty string.")
+        if self.resume_checkpoint is not None:
+            if not isinstance(self.resume_checkpoint, str) or not self.resume_checkpoint.strip():
+                raise ValueError("training.resume_checkpoint must be None or a non-empty string.")
 
 
 @dataclass
