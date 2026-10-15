@@ -73,6 +73,50 @@ class MediaPipeHandExtractor:
             self._hands.close()
             self._hands = None
 
+    def extract_from_frame(
+        self, frame_bgr: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Trích xuất 2 bàn tay x 21 landmarks x 3 tọa độ từ một khung hình (BGR).
+
+        Returns:
+            coords: np.ndarray shape (2, 21, 3)
+            mask: np.ndarray shape (2,) boolean mask
+        """
+        hands = self._get_hands()
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_hands = []
+
+        import mediapipe as mp
+
+        if self._use_tasks_api:
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            results = hands.detect(mp_img)
+            if results.hand_landmarks:
+                for h_lms in results.hand_landmarks:
+                    coords = np.array([[lm.x, lm.y, lm.z] for lm in h_lms], dtype=np.float32)
+                    frame_hands.append(coords)
+        else:
+            results = hands.process(frame_rgb)
+            if results.multi_hand_landmarks:
+                for h_lms in results.multi_hand_landmarks:
+                    coords = np.array([[lm.x, lm.y, lm.z] for lm in h_lms.landmark], dtype=np.float32)
+                    frame_hands.append(coords)
+
+        coords_out = np.zeros((2, 21, 3), dtype=np.float32)
+        mask_out = np.zeros((2,), dtype=bool)
+
+        if len(frame_hands) == 1:
+            coords_out[0] = frame_hands[0]
+            mask_out[0] = True
+        elif len(frame_hands) >= 2:
+            sorted_by_x = sorted(frame_hands[:2], key=lambda h: h[0, 0])
+            coords_out[0] = sorted_by_x[0]
+            coords_out[1] = sorted_by_x[1]
+            mask_out[0] = True
+            mask_out[1] = True
+
+        return coords_out, mask_out
+
     def extract_from_video(
         self, video_path: str | Path
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
