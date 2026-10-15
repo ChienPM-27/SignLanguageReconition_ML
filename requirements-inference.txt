@@ -1,0 +1,4 @@
+# Dependencies specifically for webcam and video landmark inference
+opencv-python
+mediapipe>=0.10.0
+streamlit>=1.30.0

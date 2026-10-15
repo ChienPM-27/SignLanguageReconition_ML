@@ -1,0 +1,157 @@
+# Isolated Sign Language Recognition (asl-signs) Phase 0 Configuration
+env:
+  name: "auto"                    # Allowed: auto, local, colab, kaggle
+  seed: 42                        # Execution seed for reproducibility
+  use_drive: false                # In Colab: mount Google Drive if true
+  project_dir_name: "asl-signs"   # Directory name under Google Drive (/content/drive/MyDrive/<name>)
+  local_root: "."                 # Local repository root directory
+  log_level: "INFO"               # Allowed: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+data:
+  competition_id: "asl-signs"     # Competition identifier
+  train_csv_name: "train.csv"     # Local metadata catalog filename
+  parquet_remote_template: "train_landmark_files/{participant_id}/{sequence_id}.parquet"
+  local_mirror_dir: null          # Pre-downloaded mirror path to bypass download (null to disable)
+  cache_dir: "data/cache"         # Download and scratch cache directory
+  download_budget_total_files: null # Total download budget cap for target sequences (null for unlimited)
+  max_files_per_gloss: null       # Sequence cap per selected sign (null for unlimited; used for smoke tests)
+  num_download_workers: 4         # Concurrent download workers
+  retry: 3                        # Max retry attempts per file on network failure
+  sample_budget_total_files: 5    # Maximum allowed files to download during sample phases
+  seqs_per_candidate_sign: 2      # Sequences to sample per candidate sign in EDA
+  sample_strategy: "spread_over_participants" # Allowed: "spread_over_participants", "random"
+  sample_seed: 42                 # Sampling seed
+  parquet_hand_types:
+    - "left_hand"
+    - "right_hand"
+  landmark_files_dir: "train_landmark_files" # Landmark parquet folder name
+
+eda:
+  num_landmark_probe_files: 1     # Parquet files to probe during setup check
+  num_expected_landmarks: 543     # Total expected landmarks per frame (468 face + 21 LH + 33 pose + 21 RH)
+  top_n_plot: 20                  # Number of top signs to plot in EDA
+  min_frames: 10                  # Minimum sequence length filter
+  max_frames: 200                 # Maximum sequence length filter
+  min_hand_coverage: 0.1          # Minimum valid hand frame fraction
+  expected_columns:
+    - "frame"
+    - "row_id"
+    - "type"
+    - "landmark_index"
+    - "x"
+    - "y"
+    - "z"
+
+selection:
+  n_glosses: 20                   # Target number of selected signs
+  n_candidates: 60                # Number of candidate signs to evaluate
+  candidate_prefilter:
+    min_samples: 10               # Minimum samples required per sign
+    min_participants: 5           # Minimum distinct participants required
+    max_participant_dominance: 0.5 # Maximum allowed sample share for any single participant
+  weights:
+    samples: 1.0                  # Weight for sample count
+    participant_coverage: 1.0     # Weight for participant diversity
+    participant_balance: 1.0      # Weight for participant balance (inverse dominance/Gini)
+    hand_coverage: 1.0            # Weight for hand visibility fraction
+    motion_energy: 1.0            # Weight for wrist velocity / path length
+    separability: 1.0             # Weight for centroid distance / distinctiveness
+    handshape_diversity: 1.0      # Weight for handshape variation
+  require_hands: "any"            # Allowed: "any", "dominant_only", "both"
+  exclude_signs: []               # Explicit signs to exclude
+  force_include_signs: []         # Explicit signs to force include
+  diversity_method: "greedy_maxmin" # Allowed: "greedy_maxmin", "top_score"
+  selection_seed: 42              # Seed for selection algorithm
+
+output:
+  output_dir: "outputs"           # Directory for general outputs and resolved config
+  report_dir: "reports"           # Directory for generated reports
+  selection_dir: "data/selection" # Directory for gloss selection outputs
+  save_resolved_config: true      # Persist resolved config along with artifacts
+  overwrite: true                 # Whether to overwrite existing reports and outputs
+
+preprocess:
+  trim_no_hand: true              # Trim leading/trailing frames with no hand detected
+  pad_frames_around: 2            # Buffer frames to keep around valid hand window
+  min_valid_frames: 3             # Minimum valid hand frames required to retain sequence
+  max_gap_frames: 3               # Maximum short gap of frames to interpolate
+  sequence_length: 32             # Fixed temporal length to resample sequences to
+  num_workers: 4                  # Workers for parallel preprocessing
+  dominant_hand: "auto"           # Determine dominant hand by data ('auto' or disabled)
+
+features:
+  set: "hands"                    # Feature landmark set: 'hands' or 'hands_pose'
+
+split:
+  method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'
+  n_train: 0.7                    # Train participant ratio or count
+  n_val: 0.15                     # Validation participant ratio or count
+  n_test: 0.15                    # Test participant ratio or count
+  n_folds: 5                      # Number of folds if group_kfold
+  seed: 42                        # Seed for participant splitting
+  min_per_gloss_per_split: 1      # Minimum sequence count per gloss in each split
+
+augmentation:
+  flip:
+    enabled: true
+    prob: 0.5
+    swap_hands: false
+  jitter:
+    enabled: true
+    prob: 0.5
+    sigma: 0.01
+  rotate:
+    enabled: true
+    prob: 0.5
+    max_angle_deg: 8.0
+  time_stretch:
+    enabled: false
+    prob: 0.3
+    max_stretch: 0.2
+  scale_translate:
+    enabled: true
+    prob: 0.7
+    scale_min: 0.85
+    scale_max: 1.15
+    translate: 0.10
+  shape_scale:
+    enabled: true
+    prob: 0.5
+    r: 0.10
+
+model:
+  name: "GRU"
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.3
+  bidirectional: false
+
+training:
+  preload: "device"               # Nạp trước dữ liệu: 'none' (đọc đĩa từng mẫu), 'ram' (nạp vào RAM CPU), 'device' (nạp thẳng lên GPU/CPU, tự quản lý loader, bỏ qua num_workers)
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  epochs: 60
+  patience: 15
+  early_stopping_min_delta: 0.0001 # Cải thiện tối thiểu để reset patience early stopping
+  early_stopping_min_epochs: 5    # Số epoch tối thiểu chạy trước khi cho phép Early Stopping
+  scheduler:
+    type: "plateau"
+    factor: 0.5
+    patience: 5
+  grad_clip: 1.0
+  num_seeds: 3
+  seeds:
+    - 42
+    - 43
+    - 44
+  amp: false
+  num_workers: 0                  # Số worker DataLoader (bị bỏ qua khi training.preload='device')
+  device: "auto"
+  resume_checkpoint: null         # Đường dẫn checkpoint để tiếp tục huấn luyện (null nếu train mới)
+
+run:
+  name: "gru_baseline"
+  output_dir: "outputs/runs"
+

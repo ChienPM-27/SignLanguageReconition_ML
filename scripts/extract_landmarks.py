@@ -1,1 +1,0 @@
-# Batch landmark extraction script

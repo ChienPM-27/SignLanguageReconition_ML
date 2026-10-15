@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .env
+*.part
+*.tmp
 
 # Dataset
 data/raw/videos/*
@@ -14,12 +16,29 @@ data/processed/*
 data/landmarks/*
 !data/landmarks/.gitkeep
 
-# Model checkpoints
+# Model checkpoints & task bundles
 models/checkpoints/*
 !models/checkpoints/.gitkeep
+models/*.task
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary / EDA
 .tmp_build_eda.py
 tests/test_dataset_eda.py
+
+# Subagents workspace
+.agents/
+
+# Generated reports & outputs (git-ignored except .gitkeep)
+reports/*
+!reports/.gitkeep
+!reports/training_fix_notes.md
+outputs/*
+!outputs/.gitkeep
+
+# Temporary test mirror / cache
+data/local_mirror/
+data/cache/
