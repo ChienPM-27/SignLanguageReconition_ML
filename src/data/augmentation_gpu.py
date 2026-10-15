@@ -50,6 +50,28 @@ def _get_aug_param(cfg_obj: Any, key: str, default: Any) -> Any:
     return val if val is not None else default
 
 
+def batch_recompute_derived_features(x: torch.Tensor) -> torch.Tensor:
+    """Tính lại relative wrist [132:135] và wrist velocity [135:141] trên batch tensor (B, T, D).
+
+    Đúng công thức chuẩn hóa của compute_feature_vector_143:
+    - rel = wrist0 - wrist1 (chỉ khi CẢ hai tay có mặt: mask0 > 0.5 & mask1 > 0.5, else 0.0)
+    - velocity: vel[t] = w[t] - w[t-1] với vel[0] = 0.0 (không mask).
+    """
+    out = x.clone()
+    B, T, D = out.shape
+    if D >= 143:
+        wrists = out[:, :, 126:132].reshape(B, T, 2, 3)
+        two_hand_mask = ((out[:, :, 141] > 0.5) & (out[:, :, 142] > 0.5)).unsqueeze(-1)
+        rel_wrist = wrists[:, :, 0, :] - wrists[:, :, 1, :]
+        out[:, :, 132:135] = torch.where(two_hand_mask, rel_wrist, torch.zeros_like(rel_wrist))
+
+        wrist_vel = torch.zeros((B, T, 2, 3), dtype=out.dtype, device=out.device)
+        if T > 1:
+            wrist_vel[:, 1:] = wrists[:, 1:] - wrists[:, :-1]
+        out[:, :, 135:141] = wrist_vel.reshape(B, T, 6)
+    return out
+
+
 def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Tensor:
     """Lật gương quanh trục x trên batch tensor shape (B, T, D).
 
@@ -61,10 +83,13 @@ def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Te
     out = x.clone()
     B, T, D = out.shape
 
+    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+
     # 1. Local Shapes (126 dims: 63 dims per hand)
     if D >= 126:
         shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
-        shapes[:, :, :, :, 0] = -shapes[:, :, :, :, 0]
+        m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
+        shapes[:, :, :, :, 0] = torch.where(m_s, -shapes[:, :, :, :, 0], shapes[:, :, :, :, 0])
         if swap_hands:
             shapes = shapes[:, :, [1, 0], :, :]
         out[:, :, :126] = shapes.reshape(B, T, 126)
@@ -72,35 +97,20 @@ def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Te
     # 2. Global Wrists (6 dims: 3 per hand)
     if D >= 132:
         wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
-        wrists[:, :, :, 0] = 1.0 - wrists[:, :, :, 0]
+        wrists[:, :, :, 0] = torch.where(mask, 1.0 - wrists[:, :, :, 0], wrists[:, :, :, 0])
         if swap_hands:
             wrists = wrists[:, :, [1, 0], :]
         out[:, :, 126:132] = wrists.reshape(B, T, 6)
 
-    # 3. Relative Wrist Vector: rel = wrist_0 - wrist_1 (3 dims)
-    if D >= 135:
-        rel = out[:, :, 132:135].clone()
-        if swap_hands:
-            rel = -rel
-            rel[:, :, 0] = -rel[:, :, 0]
-        else:
-            rel[:, :, 0] = -rel[:, :, 0]
-        out[:, :, 132:135] = rel
+    # 3. Mask (2 dims)
+    if D >= 143 and swap_hands:
+        out[:, :, 141:143] = out[:, :, [142, 141]]
 
-    # 4. Wrist Velocities (6 dims: 3 per hand)
+    # 4. Recompute derived features (rel [132:135] & vel [135:141])
     if D >= 141:
-        vel = out[:, :, 135:141].reshape(B, T, 2, 3).clone()
-        vel[:, :, :, 0] = -vel[:, :, :, 0]
-        if swap_hands:
-            vel = vel[:, :, [1, 0], :]
-        out[:, :, 135:141] = vel.reshape(B, T, 6)
+        out = batch_recompute_derived_features(out)
 
-    # 5. Mask (2 dims)
-    if D >= 143:
-        if swap_hands:
-            out[:, :, 141:143] = out[:, :, [142, 141]]
-
-    # 6. Pose landmarks nếu có (12 coords: left/right shoulder, left/right elbow)
+    # 5. Pose landmarks nếu có (12 coords: left/right shoulder, left/right elbow)
     if D >= 155:
         pose = out[:, :, 143:155].reshape(B, T, 4, 3).clone()
         pose[:, :, :, 0] = 1.0 - pose[:, :, :, 0]
@@ -116,7 +126,11 @@ def batch_random_rotate_2d(
     angles_deg: Optional[torch.Tensor] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Xoay ngẫu nhiên độc lập từng mẫu trong mặt phẳng (x, y) trên batch (B, T, D)."""
+    """Xoay ngẫu nhiên độc lập từng mẫu trong mặt phẳng (x, y) trên batch (B, T, D).
+
+    Wrists xoay quanh (0.5, 0.5) CHỈ cho tay có mặt (mask > 0.5).
+    Không recompute velocity.
+    """
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or max_angle_deg <= 0.0:
@@ -130,6 +144,8 @@ def batch_random_rotate_2d(
     cos_a = torch.cos(angles_rad)
     sin_a = torch.sin(angles_rad)
 
+    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+
     # 1. Local shapes [0:126] -> (B, T, 2 tay, 21 điểm, 3) quanh gốc (0, 0)
     if D >= 126:
         shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
@@ -137,19 +153,24 @@ def batch_random_rotate_2d(
         sin_m = sin_a.view(B, 1, 1, 1)
         sx = shapes[:, :, :, :, 0].clone()
         sy = shapes[:, :, :, :, 1].clone()
-        shapes[:, :, :, :, 0] = sx * cos_m - sy * sin_m
-        shapes[:, :, :, :, 1] = sx * sin_m + sy * cos_m
+        rot_x = sx * cos_m - sy * sin_m
+        rot_y = sx * sin_m + sy * cos_a.view(B, 1, 1, 1)
+        m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
+        shapes[:, :, :, :, 0] = torch.where(m_s, rot_x, sx)
+        shapes[:, :, :, :, 1] = torch.where(m_s, rot_y, sy)
         out[:, :, :126] = shapes.reshape(B, T, 126)
 
-    # 2. Global wrists [126:132] -> (B, T, 2 tay, 3) quanh tâm (0.5, 0.5)
+    # 2. Global wrists [126:132] -> (B, T, 2 tay, 3) quanh tâm (0.5, 0.5) CHỈ cho tay có mặt
     if D >= 132:
         wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
         cos_w = cos_a.view(B, 1, 1)
         sin_w = sin_a.view(B, 1, 1)
         wx = wrists[:, :, :, 0].clone() - 0.5
         wy = wrists[:, :, :, 1].clone() - 0.5
-        wrists[:, :, :, 0] = wx * cos_w - wy * sin_w + 0.5
-        wrists[:, :, :, 1] = wx * sin_w + wy * cos_w + 0.5
+        rot_wx = wx * cos_w - wy * sin_w + 0.5
+        rot_wy = wx * sin_w + wy * cos_w + 0.5
+        wrists[:, :, :, 0] = torch.where(mask, rot_wx, wrists[:, :, :, 0])
+        wrists[:, :, :, 1] = torch.where(mask, rot_wy, wrists[:, :, :, 1])
         out[:, :, 126:132] = wrists.reshape(B, T, 6)
 
     return out
@@ -158,17 +179,38 @@ def batch_random_rotate_2d(
 def batch_add_jitter(
     x: torch.Tensor,
     sigma: float = 0.01,
+    noise_shape: Optional[torch.Tensor] = None,
+    noise_wrist: Optional[torch.Tensor] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Thêm nhiễu Gaussian nhẹ vào min(132, D) chiều đầu trên batch (B, T, D)."""
+    """Thêm nhiễu Gaussian nhẹ vào shape và wrist CHỈ cho slot có mặt trên batch (B, T, D).
+
+    Không recompute velocity.
+    """
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or sigma <= 0.0:
         return out
 
-    coord_dim = min(132, D)
-    noise = _randn((B, T, coord_dim), out.device, generator) * sigma
-    out[:, :, :coord_dim] = out[:, :, :coord_dim] + noise
+    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+
+    # 1. Local shapes [0:126] -> (B, T, 2, 21, 3)
+    if D >= 126:
+        shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
+        if noise_shape is None:
+            noise_shape = _randn((B, T, 2, 21, 3), out.device, generator) * sigma
+        m_s = mask.unsqueeze(-1).unsqueeze(-1)  # (B, T, 2, 1, 1)
+        shapes = torch.where(m_s, shapes + noise_shape, shapes)
+        out[:, :, :126] = shapes.reshape(B, T, 126)
+
+    # 2. Global wrists [126:132] -> (B, T, 2, 3)
+    if D >= 132:
+        wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
+        if noise_wrist is None:
+            noise_wrist = _randn((B, T, 2, 3), out.device, generator) * sigma
+        wrists = torch.where(mask.unsqueeze(-1), wrists + noise_wrist, wrists)
+        out[:, :, 126:132] = wrists.reshape(B, T, 6)
+
     return out
 
 

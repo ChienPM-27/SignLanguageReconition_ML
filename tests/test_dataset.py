@@ -127,6 +127,7 @@ def test_dataset_dataloader_batching(tmp_path: Path) -> None:
 
 def test_augmentation_functions() -> None:
     arr = np.random.randn(32, 143).astype(np.float32)
+    arr[:, 141:143] = 1.0
 
     # Jitter
     jittered = add_jitter(arr, sigma=0.01)
@@ -319,6 +320,7 @@ def test_batch_rotate_matches_numpy() -> None:
     angle = 7.5
     for D in [143, 160]:
         arr_np = np.random.randn(32, D).astype(np.float32)
+        arr_np[:, 141:143] = 1.0
         x_tensor = torch.from_numpy(arr_np).unsqueeze(0)  # (1, 32, D)
 
         # Compute manual numpy rotation with angle 7.5 deg
@@ -344,8 +346,9 @@ def test_batch_rotate_matches_numpy() -> None:
 
 
 def test_batch_jitter_dimension_boundary() -> None:
-    # Jitter must ONLY touch min(132, D) dimensions
+    # Jitter must ONLY touch min(132, D) dimensions on present slots
     x = torch.zeros(2, 32, 160, dtype=torch.float32)
+    x[:, :, 141:143] = 1.0
     out = batch_add_jitter(x, sigma=0.05)
 
     # First 132 dims have noise
