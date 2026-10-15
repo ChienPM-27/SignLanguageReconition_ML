@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import time
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -69,33 +70,84 @@ st.markdown(
 )
 
 
+AVAILABLE_MODELS = {
+    "🌟 Phase A: R2 All Aug (Seed 42 - Test: 86.7%) [Khuyên dùng]": Path("outputs/Kaggle_test/islr_phaseA_generalization_15.10.2026/outputs/runs/20261015_104434_exp_r2_aug/seed_42/best_model.pt"),
+    "🌟 Phase A: R2 All Aug (Seed 44 - Test: 86.7%)": Path("outputs/Kaggle_test/islr_phaseA_generalization_15.10.2026/outputs/runs/20261015_104434_exp_r2_aug/seed_44/best_model.pt"),
+    "⚡ Phase A: R1 Flip-Only (Seed 44 - Test: 85.7%)": Path("outputs/Kaggle_test/islr_phaseA_generalization_15.10.2026/outputs/runs/20261015_104142_exp_r1_flip/seed_44/best_model.pt"),
+    "📁 Phase 2: Baseline Cũ (Seed 42 - Test: 81.1%)": Path("outputs/Kaggle_test/islr_phase2_artifacts_15.10.2026/outputs/runs/20261015_032408_gru_baseline/seed_42/best_model.pt"),
+}
+
+
 @st.cache_resource(show_spinner="Đang nạp mô hình PyTorch GRU...")
-def get_predictor() -> ISLRPredictor:
+def get_predictor(model_path_str: str) -> ISLRPredictor:
     """Initialize and cache predictor instance."""
-    return ISLRPredictor()
+    return ISLRPredictor(model_path=model_path_str)
+
+
+def predict_video_with_dominance(
+    predictor: ISLRPredictor,
+    video_path: str | Path,
+    top_k: int = 5,
+):
+    """Extract landmarks, apply dominant hand swap, and predict sign gloss."""
+    raw_coords, hand_masks, stats = predictor.extractor.extract_from_video(video_path)
+    if not stats.get("ok", False) or len(raw_coords) == 0:
+        raise ValueError(f"Could not read video or extract frames from: {video_path}")
+
+    # Dominance swap: slot 0 is the hand with higher motion displacement
+    coords_swapped = raw_coords.copy()
+    masks_swapped = hand_masks.copy()
+    disp = [0.0, 0.0]
+    for s in range(2):
+        for t in range(1, len(coords_swapped)):
+            if masks_swapped[t, s] and masks_swapped[t - 1, s]:
+                diff = coords_swapped[t, s, 0] - coords_swapped[t - 1, s, 0]
+                disp[s] += float(np.linalg.norm(diff))
+
+    if disp[1] > disp[0]:
+        coords_swapped[:, [0, 1]] = coords_swapped[:, [1, 0]]
+        masks_swapped[:, [0, 1]] = masks_swapped[:, [1, 0]]
+
+    return predictor.predict_raw_coordinates(
+        coords_swapped, masks_swapped, stats=stats, top_k=top_k
+    )
 
 
 def main():
     st.markdown('<div class="main-title">🤟 Isolated Sign Language Recognition (ISLR)</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="sub-title">Hệ thống nhận dạng 20 từ Ngôn ngữ Ký hiệu Mỹ (ASL) '
-        'dựa trên MediaPipe Hands và Mô hình Deep Learning GRU (Top-1: <b>81.07%</b> | Top-3: <b>95.38%</b>)</div>',
+        'dựa trên MediaPipe Hands và Mô hình Deep Learning GRU (Phase A Test Top-1: <b>85.31%</b> | Top-3: <b>97.22%</b>)</div>',
         unsafe_allow_html=True,
     )
 
-    # Initialize predictor
-    try:
-        predictor = get_predictor()
-    except Exception as e:
-        st.error(f"Lỗi nạp mô hình: {e}. Vui lòng kiểm tra lại file checkpoint best_model.pt.")
-        return
+    # Filter available models that exist on disk
+    valid_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.is_file()}
+    if not valid_models:
+        valid_models = {"Default Fallback Model": Path("outputs/Kaggle_test/islr_phase2_artifacts_15.10.2026/outputs/runs/20261015_032408_gru_baseline/seed_42/best_model.pt")}
 
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Cấu hình Hệ thống")
-        st.success("✅ Mô hình: GRU Classifier (Đã nạp)")
+        selected_model_name = st.selectbox(
+            "Mô hình Checkpoint:",
+            options=list(valid_models.keys()),
+            index=0,
+            help="Chọn phiên bản mô hình GRU muốn sử dụng để suy luận.",
+        )
+        model_path = valid_models[selected_model_name]
+
+    # Initialize predictor
+    try:
+        predictor = get_predictor(str(model_path))
+    except Exception as e:
+        st.error(f"Lỗi nạp mô hình: {e}. Vui lòng kiểm tra lại file checkpoint best_model.pt.")
+        return
+
+    with st.sidebar:
+        st.success(f"✅ Đã nạp: `{model_path.parent.name}`")
         st.info(f"**Số lượng nhãn**: {predictor.num_classes} từ vựng\n\n"
-                f"**Checkpoint**: `{predictor.model_path.name}`\n\n"
+                f"**Checkpoint**: `{model_path.name}`\n\n"
                 f"**Độ dài chuẩn hóa**: $T=32$ frames ($D=143$)")
 
         st.markdown("---")
@@ -196,7 +248,7 @@ def main():
                     with st.spinner("Đang trích xuất MediaPipe landmarks và suy luận qua GRU..."):
                         t_start = time.time()
                         try:
-                            result = predictor.predict_video(video_path, top_k=5)
+                            result = predict_video_with_dominance(predictor, video_path, top_k=5)
                             elapsed = time.time() - t_start
 
                             st.markdown(
