@@ -116,33 +116,87 @@ def main():
         "📊 Báo cáo & Đánh giá Hiệu năng",
     ])
 
-    # TAB 1: Upload Video File
+    # TAB 1: Video Recognition
     with tab1:
-        st.subheader("Tải lên Video cử chỉ ký hiệu")
-        st.write("Chọn file video (.mp4, .mov, .avi, .webm) chứa một cử chỉ ngôn ngữ ký hiệu để nhận diện.")
+        st.subheader("Nhận diện cử chỉ ký hiệu từ Video")
+        
+        sample_dir = Path("data/sample_videos")
+        has_samples = sample_dir.is_dir() and any(sample_dir.glob("*.mp4"))
 
-        uploaded_file = st.file_uploader(
-            "Kéo thả hoặc chọn file video từ máy tính:",
-            type=["mp4", "mov", "avi", "webm"],
+        input_mode = st.radio(
+            "Nguồn dữ liệu video:",
+            ["🎯 Chọn video mẫu có sẵn (20 từ ASL)", "📁 Tải lên video của bạn (.mp4, .mov, .avi)"],
+            horizontal=True,
         )
 
-        col_left, col_right = st.columns([1, 1])
+        video_path = None
+        is_temp = False
 
-        if uploaded_file is not None:
-            # Save uploaded video to temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                temp_video_path = tmp_file.name
+        gloss_info = {
+            "awake": ("🌅 awake", "Tỉnh táo / Thức giấc"),
+            "bird": ("🐦 bird", "Con chim"),
+            "brown": ("🟤 brown", "Màu nâu"),
+            "bye": ("👋 bye", "Tạm biệt"),
+            "cow": ("🐮 cow", "Con bò"),
+            "doll": ("🪆 doll", "Búp bê"),
+            "donkey": ("🫏 donkey", "Con lừa"),
+            "drink": ("🥤 drink", "Uống nước"),
+            "duck": ("🦆 duck", "Con vịt"),
+            "fireman": ("🧑‍🚒 fireman", "Lính cứu hỏa"),
+            "lips": ("👄 lips", "Đôi môi"),
+            "listen": ("👂 listen", "Lắng nghe"),
+            "mouse": ("🐭 mouse", "Con chuột"),
+            "nuts": ("🥜 nuts", "Hạt đậu phộng"),
+            "pretend": ("🎭 pretend", "Giả vờ"),
+            "shhh": ("🤫 shhh", "Yên lặng"),
+            "sleepy": ("🥱 sleepy", "Buồn ngủ"),
+            "uncle": ("🧔 uncle", "Người chú / Bác"),
+            "wake": ("⏰ wake", "Thức dậy"),
+            "who": ("❓ who", "Ai / Người nào"),
+        }
+
+        if input_mode == "🎯 Chọn video mẫu có sẵn (20 từ ASL)":
+            if has_samples:
+                available_samples = sorted(list(sample_dir.glob("*.mp4")), key=lambda p: p.stem)
+                sample_options = {}
+                for p in available_samples:
+                    tag, meaning = gloss_info.get(p.stem, (f"✨ {p.stem}", ""))
+                    label = f"{tag} — {meaning}" if meaning else tag
+                    sample_options[label] = p
+
+                selected_label = st.selectbox(
+                    "Chọn video mẫu từ 20 từ vựng mục tiêu:",
+                    options=list(sample_options.keys()),
+                    index=0,
+                )
+                video_path = str(sample_options[selected_label])
+                is_temp = False
+            else:
+                st.warning("Chưa tìm thấy thư mục video mẫu `data/sample_videos`. Vui lòng chạy `python scripts/download_sample_videos.py` để tải về.")
+        else:
+            uploaded_file = st.file_uploader(
+                "Kéo thả hoặc chọn file video từ máy tính:",
+                type=["mp4", "mov", "avi", "webm"],
+            )
+            if uploaded_file is not None:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+                    tmp_file.write(uploaded_file.read())
+                    video_path = tmp_file.name
+                    is_temp = True
+
+        if video_path is not None:
+            col_left, col_right = st.columns([1, 1])
 
             with col_left:
-                st.video(temp_video_path)
+                st.video(video_path)
+                st.caption(f"Đường dẫn file: `{Path(video_path).name}`")
 
             with col_right:
                 if st.button("🚀 Bắt đầu Nhận diện", type="primary", use_container_width=True):
                     with st.spinner("Đang trích xuất MediaPipe landmarks và suy luận qua GRU..."):
                         t_start = time.time()
                         try:
-                            result = predictor.predict_video(temp_video_path, top_k=5)
+                            result = predictor.predict_video(video_path, top_k=5)
                             elapsed = time.time() - t_start
 
                             st.markdown(
@@ -163,13 +217,11 @@ def main():
                             )
                             top5_df["Xác suất (%)"] = (top5_df["Xác suất"] * 100).round(2)
 
-                            # Chart
                             st.bar_chart(
                                 top5_df.set_index("Từ ký hiệu (Gloss)")["Xác suất (%)"],
                                 color="#2563EB",
                             )
 
-                            # Statistics
                             st.markdown("#### ⏱️ Thông số Kỹ thuật")
                             st.markdown(
                                 f"""
@@ -182,9 +234,8 @@ def main():
                         except Exception as err:
                             st.error(f"Lỗi trong quá trình xử lý video: {err}")
                         finally:
-                            # Cleanup temp video
-                            if os.path.exists(temp_video_path):
-                                os.unlink(temp_video_path)
+                            if is_temp and os.path.exists(video_path):
+                                os.unlink(video_path)
 
     # TAB 2: Sign Dictionary
     with tab2:
@@ -224,6 +275,23 @@ def main():
             })
 
         st.dataframe(pd.DataFrame(glosses_data), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("🎥 Xem Video Thị phạm từng Ký hiệu")
+        col_sel, col_vid = st.columns([1, 1])
+        with col_sel:
+            preview_gloss = st.selectbox(
+                "Chọn từ muốn xem video mẫu:",
+                options=[g["Từ tiếng Anh (Gloss)"].lower() for g in glosses_data],
+            )
+            meaning_str = gloss_meanings.get(preview_gloss, "")
+            st.info(f"**Cử chỉ**: `{preview_gloss.upper()}`\n\n**Ý nghĩa**: {meaning_str}")
+        with col_vid:
+            vid_p = Path(f"data/sample_videos/{preview_gloss}.mp4")
+            if vid_p.is_file():
+                st.video(str(vid_p))
+            else:
+                st.info("Chưa có video minh họa cho từ này.")
 
     # TAB 3: Model Performance
     with tab3:

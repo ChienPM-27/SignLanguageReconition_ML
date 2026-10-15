@@ -30,16 +30,42 @@ class MediaPipeHandExtractor:
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
         self._hands = None
+        self._use_tasks_api = False
 
     def _get_hands(self):
         if self._hands is None:
             import mediapipe as mp
-            self._hands = mp.solutions.hands.Hands(
-                static_image_mode=self.static_image_mode,
-                max_num_hands=self.max_num_hands,
-                min_detection_confidence=self.min_detection_confidence,
-                min_tracking_confidence=self.min_tracking_confidence,
-            )
+            if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
+                self._use_tasks_api = False
+                self._hands = mp.solutions.hands.Hands(
+                    static_image_mode=self.static_image_mode,
+                    max_num_hands=self.max_num_hands,
+                    min_detection_confidence=self.min_detection_confidence,
+                    min_tracking_confidence=self.min_tracking_confidence,
+                )
+            else:
+                import urllib.request
+                task_path = Path("models/hand_landmarker.task")
+                task_path.parent.mkdir(parents=True, exist_ok=True)
+                if not task_path.exists():
+                    url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+                    urllib.request.urlretrieve(url, task_path)
+
+                BaseOptions = mp.tasks.BaseOptions
+                HandLandmarker = mp.tasks.vision.HandLandmarker
+                HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+                VisionRunningMode = mp.tasks.vision.RunningMode
+
+                options = HandLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=str(task_path)),
+                    running_mode=VisionRunningMode.IMAGE,
+                    num_hands=self.max_num_hands,
+                    min_hand_detection_confidence=self.min_detection_confidence,
+                    min_hand_presence_confidence=self.min_detection_confidence,
+                    min_tracking_confidence=self.min_tracking_confidence,
+                )
+                self._use_tasks_api = True
+                self._hands = HandLandmarker.create_from_options(options)
         return self._hands
 
     def close(self):
@@ -67,19 +93,30 @@ class MediaPipeHandExtractor:
         hands = self._get_hands()
         raw_hands_per_frame = []  # List[List[np.ndarray(21, 3)]]
 
+        import mediapipe as mp
+
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             # OpenCV BGR -> RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(frame_rgb)
-
             frame_hands = []
-            if results.multi_hand_landmarks:
-                for h_lms in results.multi_hand_landmarks:
-                    coords = np.array([[lm.x, lm.y, lm.z] for lm in h_lms.landmark], dtype=np.float32)
-                    frame_hands.append(coords)
+
+            if self._use_tasks_api:
+                mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                results = hands.detect(mp_img)
+                if results.hand_landmarks:
+                    for h_lms in results.hand_landmarks:
+                        coords = np.array([[lm.x, lm.y, lm.z] for lm in h_lms], dtype=np.float32)
+                        frame_hands.append(coords)
+            else:
+                results = hands.process(frame_rgb)
+                if results.multi_hand_landmarks:
+                    for h_lms in results.multi_hand_landmarks:
+                        coords = np.array([[lm.x, lm.y, lm.z] for lm in h_lms.landmark], dtype=np.float32)
+                        frame_hands.append(coords)
+
             raw_hands_per_frame.append(frame_hands)
 
         cap.release()

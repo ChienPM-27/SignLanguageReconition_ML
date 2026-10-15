@@ -16,9 +16,10 @@ data/processed/*
 data/landmarks/*
 !data/landmarks/.gitkeep
 
-# Model checkpoints
+# Model checkpoints & task bundles
 models/checkpoints/*
 !models/checkpoints/.gitkeep
+models/*.task
 
 # OS
 .DS_Store
