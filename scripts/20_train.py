@@ -137,6 +137,8 @@ def run_overfit_check(
         num_classes=num_classes,
         dropout=0.0,
         bidirectional=cfg.model.bidirectional,
+        pooling=cfg.model.pooling,
+        rnn_type=cfg.model.name,
     ).to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
@@ -329,6 +331,8 @@ def train_single_seed(
         num_classes=num_classes,
         dropout=cfg.model.dropout,
         bidirectional=cfg.model.bidirectional,
+        pooling=cfg.model.pooling,
+        rnn_type=cfg.model.name,
     )
 
     ckpt_path = run_dir / "best_model.pt"
@@ -353,6 +357,8 @@ def train_single_seed(
         grad_clip=cfg.training.grad_clip,
         scheduler_cfg=cfg.training.scheduler,
         amp=cfg.training.amp,
+        resolved_config=cfg.to_dict(),
+        preprocess_identity=getattr(train_ds, "preprocess_identity", None),
     )
 
     # Save history.json

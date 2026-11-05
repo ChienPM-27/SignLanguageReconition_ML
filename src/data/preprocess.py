@@ -16,7 +16,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,12 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyarrow.parquet as pq
 
-from src.features.normalization import (
-    compute_feature_vector,
-    get_feature_dim,
-    interpolate_bounded_gaps,
-    resample_temporal,
-)
+from src.features.pipeline import prepare_landmark_sequence
+from src.features.schema import compute_preprocess_identity, get_feature_dim
 from src.utils.config import Config
 from src.utils.env import ResolvedPaths
 from src.utils.logging import get_logger
@@ -108,18 +103,7 @@ def pivot_parquet_to_raw_landmarks(parquet_path: Path) -> Tuple[np.ndarray, np.n
 
 def compute_preprocess_hash(cfg: Config) -> Tuple[str, Dict[str, Any]]:
     """Compute deterministic SHA256 hash of configuration parameters affecting feature output."""
-    meta_params: Dict[str, Any] = {
-        "preprocess.dominant_hand": str(cfg.preprocess.dominant_hand),
-        "preprocess.max_gap_frames": int(cfg.preprocess.max_gap_frames),
-        "preprocess.min_valid_frames": int(cfg.preprocess.min_valid_frames),
-        "preprocess.pad_frames_around": int(cfg.preprocess.pad_frames_around),
-        "preprocess.sequence_length": int(cfg.preprocess.sequence_length),
-        "preprocess.trim_no_hand": bool(cfg.preprocess.trim_no_hand),
-        "features.set": str(cfg.features.set),
-    }
-    serialized = json.dumps(meta_params, sort_keys=True)
-    cfg_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    return cfg_hash, meta_params
+    return compute_preprocess_identity(cfg)
 
 
 def preprocess_single_sequence(
@@ -194,102 +178,44 @@ def preprocess_single_sequence(
     rh_raw = raw_landmarks[:, RH_OFFSET : RH_OFFSET + RH_COUNT, :]  # (T_raw, 21, 3)
     pose_raw = raw_landmarks[:, POSE_OFFSET : POSE_OFFSET + POSE_COUNT, :]  # (T_raw, 33, 3)
 
-    lh_mask = ~np.isnan(lh_raw[:, 0, 0])  # Wrist non-nan
+    lh_mask = ~np.isnan(lh_raw[:, 0, 0])
     rh_mask = ~np.isnan(rh_raw[:, 0, 0])
+    pose_mask = ~np.isnan(pose_raw[:, 11, 0]) if len(pose_raw) > 0 else np.zeros((T_raw,), dtype=bool)
 
-    # 2. Dominant hand detection by empirical data
-    lh_valid_count = int(np.sum(lh_mask))
-    rh_valid_count = int(np.sum(rh_mask))
+    prep_result = prepare_landmark_sequence(
+        lh_coords=lh_raw,
+        rh_coords=rh_raw,
+        lh_mask=lh_mask,
+        rh_mask=rh_mask,
+        pose_coords=pose_raw,
+        pose_mask=pose_mask,
+        cfg=cfg,
+    )
 
-    def calc_motion(hand_pts: np.ndarray, mask: np.ndarray) -> float:
-        if np.sum(mask) < 2:
-            return 0.0
-        wrists = hand_pts[mask, 0, :]
-        deltas = np.linalg.norm(wrists[1:] - wrists[:-1], axis=-1)
-        return float(np.sum(deltas))
-
-    lh_motion = calc_motion(lh_raw, lh_mask)
-    rh_motion = calc_motion(rh_raw, rh_mask)
-
-    use_dominant = cfg.preprocess.dominant_hand not in (False, "false", "disabled", "none")
-    if use_dominant and (rh_valid_count > lh_valid_count or (rh_valid_count == lh_valid_count and rh_motion > lh_motion)):
-        # Hand 0 = Right hand, Hand 1 = Left hand
-        hands_coords = np.stack([rh_raw, lh_raw], axis=1)  # (T_raw, 2, 21, 3)
-        hands_masks = np.stack([rh_mask, lh_mask], axis=1)  # (T_raw, 2)
-    else:
-        # Hand 0 = Left hand, Hand 1 = Right hand
-        hands_coords = np.stack([lh_raw, rh_raw], axis=1)
-        hands_masks = np.stack([lh_mask, rh_mask], axis=1)
-
-    has_any_hand = hands_masks.any(axis=1)
-    n_valid_hand_frames = int(np.sum(has_any_hand))
-    hand_coverage = float(n_valid_hand_frames / T_raw) if T_raw > 0 else 0.0
-
-    # 3. Trim edge idle frames & validate min_valid_frames
-    if n_valid_hand_frames < cfg.preprocess.min_valid_frames:
+    if not prep_result.is_usable:
         return PreprocessItemResult(
             sequence_id=sequence_id,
             participant_id=participant_id,
             gloss=gloss,
             label=label,
-            n_valid_frames=n_valid_hand_frames,
-            hand_coverage=hand_coverage,
+            n_valid_frames=prep_result.n_valid_hand_frames,
+            hand_coverage=prep_result.hand_coverage,
             npy_path="",
             status="excluded",
-            reason=f"insufficient_hand_frames: {n_valid_hand_frames} < {cfg.preprocess.min_valid_frames}",
+            reason=prep_result.rejection_reason,
         )
 
-    if cfg.preprocess.trim_no_hand:
-        valid_indices = np.where(has_any_hand)[0]
-        margin = cfg.preprocess.pad_frames_around
-        start_t = max(0, int(valid_indices[0]) - margin)
-        end_t = min(T_raw, int(valid_indices[-1]) + margin + 1)
-        hands_coords = hands_coords[start_t:end_t]
-        hands_masks = hands_masks[start_t:end_t]
-        pose_raw = pose_raw[start_t:end_t]
-
-    # 4. Interpolate short gaps and zero-fill remaining
-    hands_filled, hands_masks_filled = interpolate_bounded_gaps(
-        hands_coords,
-        hands_masks,
-        max_gap_frames=cfg.preprocess.max_gap_frames,
-    )
-    pose_filled = np.nan_to_num(pose_raw, nan=0.0)
-    pose_mask = ~np.isnan(pose_raw[:, 11, 0]) if len(pose_raw) > 0 else np.zeros((len(hands_coords),), dtype=bool)
-
-    # 5. Resample to fixed sequence_length
-    T_target = cfg.preprocess.sequence_length
-    resampled_hands, resampled_hand_masks = resample_temporal(
-        hands_filled,
-        hands_masks_filled,
-        target_len=T_target,
-    )
-    resampled_pose, resampled_pose_masks = resample_temporal(
-        pose_filled,
-        pose_mask[:, np.newaxis],
-        target_len=T_target,
-    )
-
-    # 6. Extract normalized features
-    features = compute_feature_vector(
-        hands_coords=resampled_hands,
-        hands_masks=resampled_hand_masks,
-        pose_coords=resampled_pose,
-        pose_masks=resampled_pose_masks,
-        feature_set=cfg.features.set,
-    )
-
-    # 7. Save feature .npy
+    # Save feature .npy
     target_npy.parent.mkdir(parents=True, exist_ok=True)
-    np.save(str(target_npy), features.astype(np.float32))
+    np.save(str(target_npy), prep_result.features.astype(np.float32))
 
     return PreprocessItemResult(
         sequence_id=sequence_id,
         participant_id=participant_id,
         gloss=gloss,
         label=label,
-        n_valid_frames=n_valid_hand_frames,
-        hand_coverage=hand_coverage,
+        n_valid_frames=prep_result.n_valid_hand_frames,
+        hand_coverage=prep_result.hand_coverage,
         npy_path=str(target_npy),
         status="kept",
     )

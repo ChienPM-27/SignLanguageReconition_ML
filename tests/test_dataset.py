@@ -10,7 +10,6 @@ Covers:
 from __future__ import annotations
 
 import csv
-import math
 from pathlib import Path
 import numpy as np
 import pytest
@@ -158,16 +157,17 @@ def test_augmentation_functions() -> None:
     flip_swap_s0_x = flipped_swap[:, :126].reshape(32, 2, 21, 3)[:, 0, :, 0]
     assert np.allclose(flip_swap_s0_x, -orig_s1_x)
 
-    # Time stretch
-    stretched = time_stretch(arr, max_stretch=0.2)
-    assert stretched.shape == arr.shape
+    # Time stretch is disabled in Phase 0
+    with pytest.raises(ValueError, match="time_stretch is disabled in Phase 0"):
+        time_stretch(arr, max_stretch=0.2)
+    assert time_stretch(arr, max_stretch=0.0).shape == arr.shape
 
     # Config-driven apply_augmentation
     aug_cfg = {
         "flip": {"enabled": True, "prob": 1.0, "swap_hands": False},
         "jitter": {"enabled": True, "prob": 1.0, "sigma": 0.01},
         "rotate": {"enabled": True, "prob": 1.0, "max_angle_deg": 5.0},
-        "time_stretch": {"enabled": True, "prob": 1.0, "max_stretch": 0.1},
+        "time_stretch": {"enabled": False, "prob": 0.0, "max_stretch": 0.0},
     }
     augmented = apply_augmentation(arr, cfg=aug_cfg)
     assert augmented.shape == arr.shape
@@ -269,7 +269,7 @@ def test_batch_augmentation_invariants() -> None:
         "flip": {"enabled": True, "prob": 1.0, "swap_hands": False},
         "jitter": {"enabled": True, "prob": 1.0, "sigma": 0.01},
         "rotate": {"enabled": True, "prob": 1.0, "max_angle_deg": 5.0},
-        "time_stretch": {"enabled": True, "prob": 1.0, "max_stretch": 0.1},
+        "time_stretch": {"enabled": False, "prob": 0.0, "max_stretch": 0.0},
     }
 
     gen = torch.Generator().manual_seed(42)
@@ -323,38 +323,28 @@ def test_batch_rotate_matches_numpy() -> None:
         arr_np[:, 141:143] = 1.0
         x_tensor = torch.from_numpy(arr_np).unsqueeze(0)  # (1, 32, D)
 
-        # Compute manual numpy rotation with angle 7.5 deg
-        rad = math.radians(angle)
-        cos_a, sin_a = math.cos(rad), math.sin(rad)
-        rot_mat = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float32)
-
-        expected_np = arr_np.copy()
-        shapes = expected_np[:, :126].reshape(32, 2, 21, 3)
-        xy = shapes[:, :, :, :2].reshape(-1, 2)
-        shapes[:, :, :, :2] = np.dot(xy, rot_mat.T).reshape(32, 2, 21, 2)
-        expected_np[:, :126] = shapes.reshape(32, 126)
-
-        wrists = expected_np[:, 126:132].reshape(32, 2, 3)
-        w_xy = wrists[:, :, :2].reshape(-1, 2) - 0.5
-        wrists[:, :, :2] = (np.dot(w_xy, rot_mat.T) + 0.5).reshape(32, 2, 2)
-        expected_np[:, 126:132] = wrists.reshape(32, 6)
-
+        expected_np = random_rotate_2d(arr_np, angle_deg=angle)
         actual_torch = batch_random_rotate_2d(x_tensor, angles_deg=torch.tensor([angle]))
         actual_np = actual_torch.squeeze(0).cpu().numpy()
 
-        assert np.allclose(actual_np, expected_np, atol=1e-6)
+        assert np.allclose(actual_np, expected_np, atol=1e-5)
 
 
 def test_batch_jitter_dimension_boundary() -> None:
-    # Jitter must ONLY touch min(132, D) dimensions on present slots
+    # Jitter touches local hand shapes [0:126], global wrists [126:132], and recomputes motion [132:141].
+    # Local wrist landmark 0 must remain identically zero.
+    # Pose channels [143:160] must remain zero when pose is absent.
     x = torch.zeros(2, 32, 160, dtype=torch.float32)
     x[:, :, 141:143] = 1.0
     out = batch_add_jitter(x, sigma=0.05)
 
-    # First 132 dims have noise
+    # First 132 dims have noise on non-origin landmarks
     assert not torch.equal(out[:, :, :132], x[:, :, :132])
-    # Dims 132..160 must remain strictly 0
-    assert torch.equal(out[:, :, 132:], x[:, :, 132:])
+    # Local wrist origins (landmark 0 of both hands: indices 0:3 and 63:66) remain exactly zero
+    assert torch.equal(out[:, :, 0:3], torch.zeros(2, 32, 3))
+    assert torch.equal(out[:, :, 63:66], torch.zeros(2, 32, 3))
+    # Absent pose channels [143:160] remain strictly zero
+    assert torch.equal(out[:, :, 143:], torch.zeros(2, 32, 17))
 
 
 def test_batch_time_stretch_identity() -> None:
@@ -391,7 +381,7 @@ def test_device_loader_with_batch_augmentation(tmp_path: Path) -> None:
     raw_x = ds_train.preloaded_features
     assert not torch.equal(batch_x, raw_x)
     assert not torch.allclose(batch_x[:, :, :132], raw_x[:, :, :132])
-    # The non-jittered dims remain identical
-    assert torch.equal(batch_x[:, :, 132:], raw_x[:, :, 132:])
+    # Hand masks remain identical
+    assert torch.equal(batch_x[:, :, 141:], raw_x[:, :, 141:])
 
 

@@ -82,9 +82,9 @@ def test_absent_slot_preservation_numpy() -> None:
     absent_hand1 = ~resampled_masks[:, 1]
     assert absent_hand1.any(), "Test requires at least one absent frame for hand 1"
 
-    # Verify that in some absent frames, wrist coords are non-zero due to interpolation
+    # Under canonical preprocessing, absent slots have zero coordinates and false support
     absent_wrist1 = features_143[absent_hand1, 129:132]
-    assert np.any(absent_wrist1 != 0.0), "Interpolated wrist in absent slot should have non-zero coords"
+    assert np.all(absent_wrist1 == 0.0), "Canonical absence means zero wrist coordinates"
 
     aug_cfg = {
         "flip": {"enabled": True, "prob": 1.0, "swap_hands": False},
@@ -125,13 +125,16 @@ def test_absent_slot_preservation_numpy() -> None:
 
     # 7. Additional coverage: Hand 0 absent and both hands absent
     features_h0_absent = features_143.copy()
+    features_h0_absent[:, :63] = 0.0
+    features_h0_absent[:, 126:129] = 0.0
+    features_h0_absent[:, 132:135] = 0.0
+    features_h0_absent[:, 138:141] = 0.0
     features_h0_absent[:, 141] = 0.0  # hand 0 absent
     aug_h0 = apply_augmentation(features_h0_absent, cfg=aug_cfg)
     assert np.array_equal(aug_h0[:, :63], features_h0_absent[:, :63])
     assert np.array_equal(aug_h0[:, 126:129], features_h0_absent[:, 126:129])
 
-    features_both_absent = features_143.copy()
-    features_both_absent[:, 141:143] = 0.0  # both hands absent
+    features_both_absent = np.zeros_like(features_143)
     aug_both = apply_augmentation(features_both_absent, cfg=aug_cfg)
     assert np.array_equal(aug_both[:, :132], features_both_absent[:, :132])
 
@@ -184,13 +187,16 @@ def test_absent_slot_preservation_torch() -> None:
 
     # 7. Additional coverage on batch tensor: Hand 0 absent and both hands absent
     x_h0_absent = x.clone()
+    x_h0_absent[:, :, :63] = 0.0
+    x_h0_absent[:, :, 126:129] = 0.0
+    x_h0_absent[:, :, 132:135] = 0.0
+    x_h0_absent[:, :, 138:141] = 0.0
     x_h0_absent[:, :, 141] = 0.0
     aug_h0_t = apply_augmentation_batch(x_h0_absent, cfg=aug_cfg)
     assert torch.equal(aug_h0_t[:, :, :63], x_h0_absent[:, :, :63])
     assert torch.equal(aug_h0_t[:, :, 126:129], x_h0_absent[:, :, 126:129])
 
-    x_both_absent = x.clone()
-    x_both_absent[:, :, 141:143] = 0.0
+    x_both_absent = torch.zeros_like(x)
     aug_both_t = apply_augmentation_batch(x_both_absent, cfg=aug_cfg)
     assert torch.equal(aug_both_t[:, :, :132], x_both_absent[:, :, :132])
 
@@ -294,11 +300,15 @@ def test_batch_scalar_and_broadcasting_inputs() -> None:
     for b in range(1, B):
         assert torch.equal(sh_b[b], sh_b[0])
 
-    # 3. Scale translate with scalar float and t tuple across B=3
+    # 3. Scale translate with scalar float and t tuple across B=3, plus length-B list of translations
     st_b = batch_scale_translate(x_batch, s=1.15, t=(0.08, -0.05))
     assert st_b.shape == (B, 32, 143)
     for b in range(1, B):
         assert torch.equal(st_b[b], st_b[0])
+
+    t_list_b = [(0.01, 0.02), (0.03, 0.04), (0.05, 0.06)]
+    st_b_list = batch_scale_translate(x_batch, s=1.0, t=t_list_b)
+    assert st_b_list.shape == (B, 32, 143)
 
     # 4. Jitter with unbatched noise tensors (T, 2, 21, 3) across B=3
     noise_s = torch.randn(32, 2, 21, 3, dtype=torch.float32) * 0.01
@@ -307,6 +317,26 @@ def test_batch_scalar_and_broadcasting_inputs() -> None:
     assert jit_b.shape == (B, 32, 143)
     for b in range(1, B):
         assert torch.equal(jit_b[b], jit_b[0])
+
+    # 5. Jitter with flat 2D slice noise: (T, 6) and (B, T, 6) wrists; (T, 126) and (B, T, 126) shape
+    noise_w_flat = torch.randn(32, 6, dtype=torch.float32) * 0.01
+    noise_s_flat = torch.randn(32, 126, dtype=torch.float32) * 0.01
+    jit_flat_t = batch_add_jitter(x_batch, noise_shape=noise_s_flat, noise_wrist=noise_w_flat)
+    assert jit_flat_t.shape == (B, 32, 143)
+
+    noise_w_batched = torch.randn(B, 32, 6, dtype=torch.float32) * 0.01
+    noise_s_batched = torch.randn(B, 32, 126, dtype=torch.float32) * 0.01
+    jit_batched_t = batch_add_jitter(x_batch, noise_shape=noise_s_batched, noise_wrist=noise_w_batched)
+    assert jit_batched_t.shape == (B, 32, 143)
+
+    # 6. Numpy jitter with flat 2D slice noise: (T, 6) wrists and (T, 126) shape
+    np_jit_flat = add_jitter(
+        features_143,
+        noise_shape=noise_s_flat.numpy(),
+        noise_wrist=noise_w_flat.numpy(),
+    )
+    assert np_jit_flat.shape == features_143.shape
+    assert np.allclose(np_jit_flat, jit_flat_t[0].numpy(), atol=1e-5)
 
 
 def test_shape_and_dtype_preservation() -> None:

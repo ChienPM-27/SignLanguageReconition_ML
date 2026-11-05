@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -21,6 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.data.augmentation import apply_augmentation
 from src.data.device_loader import DeviceDataLoader
+from src.features.schema import PREPROCESS_SCHEMA_VERSION
 from src.utils.logging import get_logger
 
 logger = get_logger("islr.dataset")
@@ -105,6 +107,33 @@ class ISRLandmarkDataset(Dataset):
 
         if not self.split_csv.is_file():
             raise FileNotFoundError(f"Split CSV not found: {self.split_csv}")
+
+        # Validate preprocess_meta.json if present
+        meta_candidates = []
+        if self.features_dir is not None:
+            meta_candidates.append(self.features_dir / "preprocess_meta.json")
+        meta_candidates.append(self.split_csv.parent / "preprocess_meta.json")
+
+        self.preprocess_identity: Optional[str] = None
+        for meta_p in meta_candidates:
+            if meta_p.is_file():
+                try:
+                    with open(meta_p, mode="r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    self.preprocess_identity = meta.get("config_hash") or meta.get("hash")
+                    params = meta.get("parameters", {})
+                    meta_schema = params.get("schema_version")
+                    if meta_schema is not None and meta_schema != PREPROCESS_SCHEMA_VERSION:
+                        raise ValueError(
+                            f"Preprocessing schema version mismatch in {meta_p}: "
+                            f"dataset has version {meta_schema}, but codebase requires version {PREPROCESS_SCHEMA_VERSION}. "
+                            "Features must be regenerated."
+                        )
+                except Exception as e:
+                    if isinstance(e, ValueError):
+                        raise
+                    logger.warning(f"Could not read metadata from {meta_p}: {e}")
+                break
 
         self.samples: List[Dict[str, Any]] = []
         raw_rows: List[Dict[str, str]] = []

@@ -10,7 +10,6 @@ from pathlib import Path
 import tempfile
 import time
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -89,28 +88,8 @@ def predict_video_with_dominance(
     video_path: str | Path,
     top_k: int = 5,
 ):
-    """Extract landmarks, apply dominant hand swap, and predict sign gloss."""
-    raw_coords, hand_masks, stats = predictor.extractor.extract_from_video(video_path)
-    if not stats.get("ok", False) or len(raw_coords) == 0:
-        raise ValueError(f"Could not read video or extract frames from: {video_path}")
-
-    # Dominance swap: slot 0 is the hand with higher motion displacement
-    coords_swapped = raw_coords.copy()
-    masks_swapped = hand_masks.copy()
-    disp = [0.0, 0.0]
-    for s in range(2):
-        for t in range(1, len(coords_swapped)):
-            if masks_swapped[t, s] and masks_swapped[t - 1, s]:
-                diff = coords_swapped[t, s, 0] - coords_swapped[t - 1, s, 0]
-                disp[s] += float(np.linalg.norm(diff))
-
-    if disp[1] > disp[0]:
-        coords_swapped[:, [0, 1]] = coords_swapped[:, [1, 0]]
-        masks_swapped[:, [0, 1]] = masks_swapped[:, [1, 0]]
-
-    return predictor.predict_raw_coordinates(
-        coords_swapped, masks_swapped, stats=stats, top_k=top_k
-    )
+    """Extract landmarks and predict sign gloss using canonical shared pipeline."""
+    return predictor.predict_video(video_path, top_k=top_k)
 
 
 def main():

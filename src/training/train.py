@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from src.features.schema import PREPROCESS_SCHEMA_VERSION
 from .metrics import compute_macro_f1, compute_top_k_accuracy
 
 
@@ -166,6 +167,9 @@ def save_checkpoint(
     patience_counter: int,
     early_stopping_best: float,
     history: Dict[str, list],
+    resolved_config: Optional[Dict[str, Any]] = None,
+    schema_version: int = PREPROCESS_SCHEMA_VERSION,
+    preprocess_identity: Optional[str] = None,
 ) -> Path:
     """Lưu stateful checkpoint phục vụ khả năng resume hoàn chỉnh."""
     path = Path(checkpoint_path)
@@ -181,6 +185,9 @@ def save_checkpoint(
         "patience_counter": patience_counter,
         "early_stopping_best": early_stopping_best,
         "history": copy.deepcopy(history),
+        "schema_version": schema_version,
+        "preprocess_identity": preprocess_identity,
+        "resolved_config": resolved_config,
     }
     torch.save(payload, str(path))
     return path
@@ -247,6 +254,8 @@ def train_gru(
     grad_clip: float = 1.0,
     scheduler_cfg: Optional[Dict[str, Any]] = None,
     amp: bool = False,
+    resolved_config: Optional[Dict[str, Any]] = None,
+    preprocess_identity: Optional[str] = None,
 ) -> Dict[str, list]:
     """Huấn luyện mô hình GRU với Stateful Checkpoint, Resume, CSV metric streaming và Early Stopping cải tiến."""
     model.to(device)
@@ -256,7 +265,7 @@ def train_gru(
 
     scaler = None
     if amp and device.type == "cuda":
-        scaler = torch.amp.GradScaler(device_type="cuda")
+        scaler = torch.amp.GradScaler("cuda")
 
     best_val_loss = float("inf")
     best_val_acc = 0.0
@@ -281,6 +290,14 @@ def train_gru(
             scaler=scaler,
             device=device,
         )
+        if preprocess_identity is not None:
+            saved_identity = ckpt_info.get("preprocess_identity")
+            if saved_identity is not None and saved_identity != preprocess_identity:
+                raise ValueError(
+                    f"Checkpoint preprocess_identity '{saved_identity}' does not match "
+                    f"current dataset preprocess_identity '{preprocess_identity}'. "
+                    "Cannot resume training on mismatched features."
+                )
         saved_epoch = int(ckpt_info.get("epoch", 0))
         start_epoch = saved_epoch + 1
         best_val_loss = float(ckpt_info.get("best_val_loss", float("inf")))
@@ -381,6 +398,9 @@ def train_gru(
                         patience_counter=patience_counter,
                         early_stopping_best=early_stopping_best,
                         history=history,
+                        resolved_config=resolved_config,
+                        schema_version=PREPROCESS_SCHEMA_VERSION,
+                        preprocess_identity=preprocess_identity,
                     )
 
                 if verbose and (ep % 5 == 0 or ep == 1 or is_best or patience_counter >= patience):

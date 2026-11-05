@@ -36,9 +36,13 @@ tests/test_dataset_eda.py
 reports/*
 !reports/.gitkeep
 !reports/training_fix_notes.md
+!reports/p0_*.md
 outputs/*
 !outputs/.gitkeep
 
 # Temporary test mirror / cache
 data/local_mirror/
 data/cache/
+
+# Graphify
+graphify-out/cache/

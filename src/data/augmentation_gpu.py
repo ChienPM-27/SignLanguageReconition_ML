@@ -1,12 +1,13 @@
 """Batched PyTorch tensor augmentation running directly on device (GPU / CPU).
 
-Hỗ trợ các phép biến đổi song song theo batch trên tensor (B, T, D):
-1. batch_horizontal_flip: Lật gương trục x, hỗ trợ tùy chọn swap_hands.
-2. batch_random_rotate_2d: Xoay ngẫu nhiên độc lập từng mẫu trong [-max_angle, max_angle].
-3. batch_add_jitter: Thêm nhiễu Gaussian nhẹ vào min(132, D) chiều tọa độ đầu.
-4. batch_time_stretch: Co giãn tốc độ cử chỉ rate ~ U(1-max_stretch, 1+max_stretch)
-   và nội suy tuyến tính theo thời gian.
-5. apply_augmentation_batch: Áp dụng chuỗi biến đổi theo cấu hình AugmentationConfig / dict.
+Supports parallel batched transformations on tensor (B, T, D):
+1. batch_horizontal_flip: Horizontal reflection with corrected torso-pose reflection and anatomical swap.
+2. batch_random_rotate_2d: 2D rotation of hands, wrists, and pose with recomputed motion.
+3. batch_add_jitter: Gaussian perturbation of shape (with fixed wrist origin) and wrists with recomputed motion.
+4. batch_shape_scale: Independent x, y scaling of local hand shapes on usable slots.
+5. batch_scale_translate: Scale and translation of global wrist coordinates with recomputed motion.
+6. batch_time_stretch: Explicitly disabled in Phase 0.
+7. apply_augmentation_batch: Config-driven batched pipeline.
 """
 from __future__ import annotations
 
@@ -14,13 +15,25 @@ import math
 from typing import Any, Optional, Tuple
 import torch
 
+from src.features.schema import (
+    SLICE_GLOBAL_WRISTS,
+    SLICE_HAND_MASKS,
+    SLICE_LOCAL_HAND_SHAPES,
+    SLICE_NORM_POSE,
+    SLICE_POSE_MASK,
+    SLICE_REL_WRIST,
+    SLICE_SHOULDER_SCALE,
+    SLICE_TORSO_VEL,
+    SLICE_WRIST_VEL,
+)
+
 
 def _rand(
     size: Tuple[int, ...],
     device: torch.device,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Sinh số ngẫu nhiên đều [0, 1) tương thích generator cross-device."""
+    """Generate uniform random tensor [0, 1) compatible with cross-device generator."""
     if generator is not None:
         if str(generator.device) == str(device):
             return torch.rand(size, generator=generator, device=device)
@@ -33,7 +46,7 @@ def _randn(
     device: torch.device,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Sinh số ngẫu nhiên chuẩn N(0, 1) tương thích generator cross-device."""
+    """Generate standard normal random tensor N(0, 1) compatible with cross-device generator."""
     if generator is not None:
         if str(generator.device) == str(device):
             return torch.randn(size, generator=generator, device=device)
@@ -42,7 +55,7 @@ def _randn(
 
 
 def _get_aug_param(cfg_obj: Any, key: str, default: Any) -> Any:
-    """Trích xuất tham số từ dict hoặc dataclass cấu hình."""
+    """Extract parameter from dict or config dataclass."""
     if isinstance(cfg_obj, dict):
         val = cfg_obj.get(key)
     else:
@@ -51,71 +64,108 @@ def _get_aug_param(cfg_obj: Any, key: str, default: Any) -> Any:
 
 
 def batch_recompute_derived_features(x: torch.Tensor) -> torch.Tensor:
-    """Tính lại relative wrist [132:135] và wrist velocity [135:141] trên batch tensor (B, T, D).
+    """Recompute relative wrist [132:135] and wrist velocity [135:141] on batch tensor (B, T, D).
 
-    Đúng công thức chuẩn hóa của compute_feature_vector_143:
-    - rel = wrist0 - wrist1 (chỉ khi CẢ hai tay có mặt: mask0 > 0.5 & mask1 > 0.5, else 0.0)
-    - velocity: vel[t] = w[t] - w[t-1] với vel[0] = 0.0 (không mask).
+    Gated on valid endpoints:
+    - rel = wrist0 - wrist1 (only when BOTH hands present: mask0 > 0.5 & mask1 > 0.5, else 0.0)
+    - velocity: vel[t] = w[t] - w[t-1] gated on adjacent valid frames, with vel[0] = 0.0.
+    - If D >= 160: sanitize unsupported pose channels and gate torso velocity on adjacent valid frames.
     """
     out = x.clone()
     B, T, D = out.shape
     if D >= 143:
-        wrists = out[:, :, 126:132].reshape(B, T, 2, 3)
-        two_hand_mask = ((out[:, :, 141] > 0.5) & (out[:, :, 142] > 0.5)).unsqueeze(-1)
+        m = out[:, :, SLICE_HAND_MASKS] > 0.5  # (B, T, 2)
+        wrists = out[:, :, SLICE_GLOBAL_WRISTS].reshape(B, T, 2, 3)
+        wrists = torch.where(m.unsqueeze(-1), wrists, torch.zeros_like(wrists))
+        out[:, :, SLICE_GLOBAL_WRISTS] = wrists.reshape(B, T, 6)
+
+        two_hand_mask = (m[:, :, 0] & m[:, :, 1]).unsqueeze(-1)
         rel_wrist = wrists[:, :, 0, :] - wrists[:, :, 1, :]
-        out[:, :, 132:135] = torch.where(two_hand_mask, rel_wrist, torch.zeros_like(rel_wrist))
+        out[:, :, SLICE_REL_WRIST] = torch.where(two_hand_mask, rel_wrist, torch.zeros_like(rel_wrist))
 
         wrist_vel = torch.zeros((B, T, 2, 3), dtype=out.dtype, device=out.device)
         if T > 1:
-            wrist_vel[:, 1:] = wrists[:, 1:] - wrists[:, :-1]
-        out[:, :, 135:141] = wrist_vel.reshape(B, T, 6)
+            vel_valid = (m[:, 1:, :] & m[:, :-1, :]).unsqueeze(-1)
+            diff = wrists[:, 1:] - wrists[:, :-1]
+            wrist_vel[:, 1:] = torch.where(vel_valid, diff, torch.zeros_like(diff))
+        out[:, :, SLICE_WRIST_VEL] = wrist_vel.reshape(B, T, 6)
+
+    if D >= 160:
+        p = out[:, :, SLICE_POSE_MASK].squeeze(-1) > 0.5  # (B, T)
+        p_u = p.unsqueeze(-1)
+        out[:, :, SLICE_NORM_POSE] = torch.where(p_u, out[:, :, SLICE_NORM_POSE], torch.zeros_like(out[:, :, SLICE_NORM_POSE]))
+        out[:, :, SLICE_SHOULDER_SCALE] = torch.where(p_u, out[:, :, SLICE_SHOULDER_SCALE], torch.zeros_like(out[:, :, SLICE_SHOULDER_SCALE]))
+        u_valid = torch.zeros((B, T), dtype=torch.bool, device=out.device)
+        if T > 1:
+            u_valid[:, 1:] = p[:, 1:] & p[:, :-1]
+        out[:, :, SLICE_TORSO_VEL] = torch.where(u_valid.unsqueeze(-1), out[:, :, SLICE_TORSO_VEL], torch.zeros_like(out[:, :, SLICE_TORSO_VEL]))
+
     return out
 
 
 def batch_horizontal_flip(x: torch.Tensor, swap_hands: bool = False) -> torch.Tensor:
-    """Lật gương quanh trục x trên batch tensor shape (B, T, D).
+    """Horizontal mirror reflection on batch tensor (B, T, D).
 
-    Args:
-        x: Tensor shape (B, T, D).
-        swap_hands: Nếu False, chỉ lật trục x và giữ nguyên slot 0 là tay trội.
-                    Nếu True, hoán đổi slot tay 0 <-> tay 1.
+    Corrected contract:
+    - Local shapes negate x on usable slots.
+    - Global wrists map x -> 1 - x on usable slots.
+    - Torso-centered pose negates x and swaps anatomical sides [1, 0, 3, 2].
+    - Torso velocity negates x on valid adjacent frames.
+    - Unsupported slots strictly remain 0.
     """
     out = x.clone()
     B, T, D = out.shape
 
-    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m = out[:, :, SLICE_HAND_MASKS] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
 
-    # 1. Local Shapes (126 dims: 63 dims per hand)
+    # 1. Local Shapes (126 dims)
     if D >= 126:
-        shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
-        m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
-        shapes[:, :, :, :, 0] = torch.where(m_s, -shapes[:, :, :, :, 0], shapes[:, :, :, :, 0])
+        shapes = out[:, :, SLICE_LOCAL_HAND_SHAPES].reshape(B, T, 2, 21, 3).clone()
+        m_s = m.unsqueeze(-1)  # (B, T, 2, 1)
+        shapes[:, :, :, :, 0] = torch.where(m_s, -shapes[:, :, :, :, 0], torch.zeros_like(shapes[:, :, :, :, 0]))
+        shapes[:, :, :, :, 1:] = torch.where(m.unsqueeze(-1).unsqueeze(-1), shapes[:, :, :, :, 1:], torch.zeros_like(shapes[:, :, :, :, 1:]))
         if swap_hands:
             shapes = shapes[:, :, [1, 0], :, :]
-        out[:, :, :126] = shapes.reshape(B, T, 126)
+        out[:, :, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(B, T, 126)
 
-    # 2. Global Wrists (6 dims: 3 per hand)
+    # 2. Global Wrists (6 dims)
     if D >= 132:
-        wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
-        wrists[:, :, :, 0] = torch.where(mask, 1.0 - wrists[:, :, :, 0], wrists[:, :, :, 0])
+        wrists = out[:, :, SLICE_GLOBAL_WRISTS].reshape(B, T, 2, 3).clone()
+        wrists[:, :, :, 0] = torch.where(m, 1.0 - wrists[:, :, :, 0], torch.zeros_like(wrists[:, :, :, 0]))
+        wrists[:, :, :, 1:] = torch.where(m.unsqueeze(-1), wrists[:, :, :, 1:], torch.zeros_like(wrists[:, :, :, 1:]))
         if swap_hands:
             wrists = wrists[:, :, [1, 0], :]
-        out[:, :, 126:132] = wrists.reshape(B, T, 6)
+        out[:, :, SLICE_GLOBAL_WRISTS] = wrists.reshape(B, T, 6)
 
-    # 3. Mask (2 dims)
+    # 3. Swap Hand Masks if swap_hands is requested
     if D >= 143 and swap_hands:
-        out[:, :, 141:143] = out[:, :, [142, 141]]
+        out[:, :, SLICE_HAND_MASKS] = out[:, :, [142, 141]]
 
-    # 4. Recompute derived features (rel [132:135] & vel [135:141])
+    # 4. Recompute derived features
     if D >= 143:
         out = batch_recompute_derived_features(out)
 
-    # 5. Pose landmarks nếu có (12 coords: left/right shoulder, left/right elbow)
-    if D >= 155:
-        pose = out[:, :, 143:155].reshape(B, T, 4, 3).clone()
-        pose[:, :, :, 0] = 1.0 - pose[:, :, :, 0]
+    # 5. Pose landmarks
+    if D >= 160:
+        p = out[:, :, SLICE_POSE_MASK].squeeze(-1) > 0.5  # (B, T)
+        pose = out[:, :, SLICE_NORM_POSE].reshape(B, T, 4, 3).clone()
+        # Torso-centered coordinates: negate x
+        pose[:, :, :, 0] = torch.where(p.unsqueeze(-1), -pose[:, :, :, 0], torch.zeros_like(pose[:, :, :, 0]))
+        pose[:, :, :, 1:] = torch.where(p.unsqueeze(-1).unsqueeze(-1), pose[:, :, :, 1:], torch.zeros_like(pose[:, :, :, 1:]))
+        # Swap anatomical sides: L_shoulder <-> R_shoulder, L_elbow <-> R_elbow
         pose_flipped = pose[:, :, [1, 0, 3, 2], :]
-        out[:, :, 143:155] = pose_flipped.reshape(B, T, 12)
+        out[:, :, SLICE_NORM_POSE] = pose_flipped.reshape(B, T, 12)
+
+        # Torso velocity: negate x
+        u = out[:, :, SLICE_TORSO_VEL].clone()
+        u_valid = torch.zeros((B, T), dtype=torch.bool, device=out.device)
+        if T > 1:
+            u_valid[:, 1:] = p[:, 1:] & p[:, :-1]
+        u[:, :, 0] = torch.where(u_valid, -u[:, :, 0], torch.zeros_like(u[:, :, 0]))
+        u[:, :, 1:] = torch.where(u_valid.unsqueeze(-1), u[:, :, 1:], torch.zeros_like(u[:, :, 1:]))
+        out[:, :, SLICE_TORSO_VEL] = u
+
+        out[:, :, SLICE_SHOULDER_SCALE] = torch.where(p.unsqueeze(-1), out[:, :, SLICE_SHOULDER_SCALE], torch.zeros_like(out[:, :, SLICE_SHOULDER_SCALE]))
 
     return out
 
@@ -126,11 +176,7 @@ def batch_random_rotate_2d(
     angles_deg: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Xoay ngẫu nhiên độc lập từng mẫu trong mặt phẳng (x, y) trên batch (B, T, D).
-
-    Wrists xoay quanh (0.5, 0.5) CHỈ cho tay có mặt (mask > 0.5).
-    Không recompute velocity.
-    """
+    """Rotate points in (x, y) plane on batch (B, T, D) and recompute motion."""
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or max_angle_deg <= 0.0:
@@ -150,34 +196,73 @@ def batch_random_rotate_2d(
     cos_a = torch.cos(angles_rad)
     sin_a = torch.sin(angles_rad)
 
-    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m = out[:, :, SLICE_HAND_MASKS] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
 
-    # 1. Local shapes [0:126] -> (B, T, 2 tay, 21 điểm, 3) quanh gốc (0, 0)
+    # 1. Local shapes [0:126] -> (B, T, 2, 21, 3)
     if D >= 126:
-        shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
+        shapes = out[:, :, SLICE_LOCAL_HAND_SHAPES].reshape(B, T, 2, 21, 3).clone()
         cos_m = cos_a.view(B, 1, 1, 1)
         sin_m = sin_a.view(B, 1, 1, 1)
         sx = shapes[:, :, :, :, 0].clone()
         sy = shapes[:, :, :, :, 1].clone()
         rot_x = sx * cos_m - sy * sin_m
         rot_y = sx * sin_m + sy * cos_m
-        m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
-        shapes[:, :, :, :, 0] = torch.where(m_s, rot_x, sx)
-        shapes[:, :, :, :, 1] = torch.where(m_s, rot_y, sy)
-        out[:, :, :126] = shapes.reshape(B, T, 126)
+        m_s = m.unsqueeze(-1)
+        shapes[:, :, :, :, 0] = torch.where(m_s, rot_x, torch.zeros_like(rot_x))
+        shapes[:, :, :, :, 1] = torch.where(m_s, rot_y, torch.zeros_like(rot_y))
+        shapes[:, :, :, :, 2] = torch.where(m_s, shapes[:, :, :, :, 2], torch.zeros_like(shapes[:, :, :, :, 2]))
+        out[:, :, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(B, T, 126)
 
-    # 2. Global wrists [126:132] -> (B, T, 2 tay, 3) quanh tâm (0.5, 0.5) CHỈ cho tay có mặt
+    # 2. Global wrists [126:132] -> (B, T, 2, 3)
     if D >= 132:
-        wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
+        wrists = out[:, :, SLICE_GLOBAL_WRISTS].reshape(B, T, 2, 3).clone()
         cos_w = cos_a.view(B, 1, 1)
         sin_w = sin_a.view(B, 1, 1)
         wx = wrists[:, :, :, 0].clone() - 0.5
         wy = wrists[:, :, :, 1].clone() - 0.5
         rot_wx = wx * cos_w - wy * sin_w + 0.5
         rot_wy = wx * sin_w + wy * cos_w + 0.5
-        wrists[:, :, :, 0] = torch.where(mask, rot_wx, wrists[:, :, :, 0])
-        wrists[:, :, :, 1] = torch.where(mask, rot_wy, wrists[:, :, :, 1])
-        out[:, :, 126:132] = wrists.reshape(B, T, 6)
+        wrists[:, :, :, 0] = torch.where(m, rot_wx, torch.zeros_like(rot_wx))
+        wrists[:, :, :, 1] = torch.where(m, rot_wy, torch.zeros_like(rot_wy))
+        wrists[:, :, :, 2] = torch.where(m, wrists[:, :, :, 2], torch.zeros_like(wrists[:, :, :, 2]))
+        out[:, :, SLICE_GLOBAL_WRISTS] = wrists.reshape(B, T, 6)
+
+    # 3. Recompute derived features
+    if D >= 143:
+        out = batch_recompute_derived_features(out)
+
+    # 4. Pose rotation [143:155] and torso velocity [155:158]
+    if D >= 160:
+        p = out[:, :, SLICE_POSE_MASK].squeeze(-1) > 0.5  # (B, T)
+        pose = out[:, :, SLICE_NORM_POSE].reshape(B, T, 4, 3).clone()
+        cos_p = cos_a.view(B, 1, 1)
+        sin_p = sin_a.view(B, 1, 1)
+        px = pose[:, :, :, 0].clone()
+        py = pose[:, :, :, 1].clone()
+        rot_px = px * cos_p - py * sin_p
+        rot_py = px * sin_p + py * cos_p
+        p_u = p.unsqueeze(-1)
+        pose[:, :, :, 0] = torch.where(p_u, rot_px, torch.zeros_like(rot_px))
+        pose[:, :, :, 1] = torch.where(p_u, rot_py, torch.zeros_like(rot_py))
+        pose[:, :, :, 2] = torch.where(p_u, pose[:, :, :, 2], torch.zeros_like(pose[:, :, :, 2]))
+        out[:, :, SLICE_NORM_POSE] = pose.reshape(B, T, 12)
+
+        u = out[:, :, SLICE_TORSO_VEL].clone()
+        cos_u = cos_a.view(B, 1)
+        sin_u = sin_a.view(B, 1)
+        ux = u[:, :, 0].clone()
+        uy = u[:, :, 1].clone()
+        rot_ux = ux * cos_u - uy * sin_u
+        rot_uy = ux * sin_u + uy * cos_u
+        u_valid = torch.zeros((B, T), dtype=torch.bool, device=out.device)
+        if T > 1:
+            u_valid[:, 1:] = p[:, 1:] & p[:, :-1]
+        u[:, :, 0] = torch.where(u_valid, rot_ux, torch.zeros_like(rot_ux))
+        u[:, :, 1] = torch.where(u_valid, rot_uy, torch.zeros_like(rot_uy))
+        u[:, :, 2] = torch.where(u_valid, u[:, :, 2], torch.zeros_like(u[:, :, 2]))
+        out[:, :, SLICE_TORSO_VEL] = u
+
+        out[:, :, SLICE_SHOULDER_SCALE] = torch.where(p.unsqueeze(-1), out[:, :, SLICE_SHOULDER_SCALE], torch.zeros_like(out[:, :, SLICE_SHOULDER_SCALE]))
 
     return out
 
@@ -189,43 +274,52 @@ def batch_add_jitter(
     noise_wrist: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Thêm nhiễu Gaussian nhẹ vào shape và wrist CHỈ cho slot có mặt trên batch (B, T, D).
-
-    Không recompute velocity.
-    """
+    """Add Gaussian noise to shape and wrist on usable slots and recompute motion."""
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or sigma <= 0.0:
         return out
 
-    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m = out[:, :, SLICE_HAND_MASKS] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
 
     # 1. Local shapes [0:126] -> (B, T, 2, 21, 3)
     if D >= 126:
-        shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
+        shapes = out[:, :, SLICE_LOCAL_HAND_SHAPES].reshape(B, T, 2, 21, 3).clone()
         if noise_shape is not None:
-            noise_shape_t = torch.as_tensor(noise_shape, device=out.device, dtype=out.dtype)
-            if noise_shape_t.ndim == 4 and noise_shape_t.shape == (T, 2, 21, 3):
-                noise_shape_t = noise_shape_t.unsqueeze(0)
+            noise_shape_t = torch.as_tensor(noise_shape, device=out.device, dtype=out.dtype).clone()
+            if noise_shape_t.ndim == 2 and noise_shape_t.shape == (T, 126):
+                noise_shape_t = noise_shape_t.reshape(T, 2, 21, 3).unsqueeze(0).expand(B, -1, -1, -1, -1).clone()
+            elif noise_shape_t.ndim == 3 and noise_shape_t.shape == (B, T, 126):
+                noise_shape_t = noise_shape_t.reshape(B, T, 2, 21, 3).clone()
+            elif noise_shape_t.ndim == 4 and noise_shape_t.shape == (T, 2, 21, 3):
+                noise_shape_t = noise_shape_t.unsqueeze(0).expand(B, -1, -1, -1, -1).clone()
         else:
             noise_shape_t = _randn((B, T, 2, 21, 3), out.device, generator) * sigma
-        m_s = mask.unsqueeze(-1).unsqueeze(-1)  # (B, T, 2, 1, 1)
-        shapes = torch.where(m_s, shapes + noise_shape_t, shapes)
-        out[:, :, :126] = shapes.reshape(B, T, 126)
+        # Landmark 0 noise is identically zero
+        noise_shape_t[:, :, :, 0, :] = 0.0
+        m_s = m.unsqueeze(-1).unsqueeze(-1)
+        shapes = torch.where(m_s, shapes + noise_shape_t, torch.zeros_like(shapes))
+        out[:, :, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(B, T, 126)
 
     # 2. Global wrists [126:132] -> (B, T, 2, 3)
     if D >= 132:
-        wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
+        wrists = out[:, :, SLICE_GLOBAL_WRISTS].reshape(B, T, 2, 3).clone()
         if noise_wrist is not None:
-            noise_wrist_t = torch.as_tensor(noise_wrist, device=out.device, dtype=out.dtype)
+            noise_wrist_t = torch.as_tensor(noise_wrist, device=out.device, dtype=out.dtype).clone()
             if noise_wrist_t.ndim == 2 and noise_wrist_t.shape == (T, 6):
-                noise_wrist_t = noise_wrist_t.reshape(T, 2, 3).unsqueeze(0)
+                noise_wrist_t = noise_wrist_t.reshape(T, 2, 3).unsqueeze(0).expand(B, -1, -1, -1).clone()
             elif noise_wrist_t.ndim == 3 and noise_wrist_t.shape == (T, 2, 3):
-                noise_wrist_t = noise_wrist_t.unsqueeze(0)
+                noise_wrist_t = noise_wrist_t.unsqueeze(0).expand(B, -1, -1, -1).clone()
+            elif noise_wrist_t.ndim == 3 and noise_wrist_t.shape == (B, T, 6):
+                noise_wrist_t = noise_wrist_t.reshape(B, T, 2, 3).clone()
         else:
             noise_wrist_t = _randn((B, T, 2, 3), out.device, generator) * sigma
-        wrists = torch.where(mask.unsqueeze(-1), wrists + noise_wrist_t, wrists)
-        out[:, :, 126:132] = wrists.reshape(B, T, 6)
+        wrists = torch.where(m.unsqueeze(-1), wrists + noise_wrist_t, torch.zeros_like(wrists))
+        out[:, :, SLICE_GLOBAL_WRISTS] = wrists.reshape(B, T, 6)
+
+    # 3. Recompute derived features
+    if D >= 143:
+        out = batch_recompute_derived_features(out)
 
     return out
 
@@ -237,10 +331,7 @@ def batch_shape_scale(
     sy: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Co giãn độc lập trục x, y của local hand shapes [0:126] trên batch (B, T, D) cho tay có mặt.
-
-    sx, sy ~ U(1 - r, 1 + r).
-    """
+    """Scale local hand shapes [0:126] for usable slots on batch (B, T, D)."""
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or D < 126 or r <= 0.0:
@@ -267,15 +358,16 @@ def batch_shape_scale(
     sx_m = sx.view(B, 1, 1, 1)
     sy_m = sy.view(B, 1, 1, 1)
 
-    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
-    m_s = mask.unsqueeze(-1)  # (B, T, 2, 1)
+    m = out[:, :, SLICE_HAND_MASKS] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m_s = m.unsqueeze(-1)
 
-    shapes = out[:, :, :126].reshape(B, T, 2, 21, 3).clone()
+    shapes = out[:, :, SLICE_LOCAL_HAND_SHAPES].reshape(B, T, 2, 21, 3).clone()
     sh_x = shapes[:, :, :, :, 0] * sx_m
     sh_y = shapes[:, :, :, :, 1] * sy_m
-    shapes[:, :, :, :, 0] = torch.where(m_s, sh_x, shapes[:, :, :, :, 0])
-    shapes[:, :, :, :, 1] = torch.where(m_s, sh_y, shapes[:, :, :, :, 1])
-    out[:, :, :126] = shapes.reshape(B, T, 126)
+    shapes[:, :, :, :, 0] = torch.where(m_s, sh_x, torch.zeros_like(sh_x))
+    shapes[:, :, :, :, 1] = torch.where(m_s, sh_y, torch.zeros_like(sh_y))
+    shapes[:, :, :, :, 2] = torch.where(m_s, shapes[:, :, :, :, 2], torch.zeros_like(shapes[:, :, :, :, 2]))
+    out[:, :, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(B, T, 126)
 
     return out
 
@@ -291,30 +383,23 @@ def batch_scale_translate(
     ty: Optional[Any] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Co giãn và dịch chuyển cổ tay tuyệt đối (xy) trên batch (B, T, D) cho tay có mặt.
-
-    wrist_xy' = (wrist_xy - 0.5) * s + 0.5 + (tx, ty)
-    Sau đó batch_recompute_derived_features.
-    """
+    """Scale and translate global wrist coordinates on batch (B, T, D) and recompute motion."""
     out = x.clone()
     B, T, D = out.shape
     if B == 0 or D < 132:
         return out
 
     if t is not None:
-        if isinstance(t, (tuple, list)):
-            if len(t) != 2:
-                raise ValueError(f"t must have 2 elements (tx, ty), got {len(t)}")
+        t_t = torch.as_tensor(t, device=out.device, dtype=torch.float32)
+        if t_t.ndim == 2 and t_t.shape == (B, 2):
+            tx, ty = t_t[:, 0], t_t[:, 1]
+        elif t_t.numel() == 2:
+            t_flat = t_t.flatten()
+            tx, ty = t_flat[0], t_flat[1]
+        elif isinstance(t, (tuple, list)) and len(t) == 2:
             tx, ty = t[0], t[1]
         else:
-            t_t = torch.as_tensor(t, device=out.device, dtype=torch.float32)
-            if t_t.numel() == 2:
-                t_flat = t_t.flatten()
-                tx, ty = t_flat[0], t_flat[1]
-            elif t_t.ndim == 2 and t_t.shape == (B, 2):
-                tx, ty = t_t[:, 0], t_t[:, 1]
-            else:
-                raise ValueError(f"t tensor must have shape (2,) or ({B}, 2), got {t_t.shape}")
+            raise ValueError(f"t tensor must have shape (2,) or ({B}, 2), got {t_t.shape}")
 
     if s is None:
         s = _rand((B,), out.device, generator) * (scale_max - scale_min) + scale_min
@@ -347,14 +432,15 @@ def batch_scale_translate(
     tx_m = tx.view(B, 1, 1)
     ty_m = ty.view(B, 1, 1)
 
-    mask = out[:, :, 141:143] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
+    m = out[:, :, SLICE_HAND_MASKS] > 0.5 if D >= 143 else torch.ones((B, T, 2), dtype=torch.bool, device=out.device)
 
-    wrists = out[:, :, 126:132].reshape(B, T, 2, 3).clone()
+    wrists = out[:, :, SLICE_GLOBAL_WRISTS].reshape(B, T, 2, 3).clone()
     w_x = (wrists[:, :, :, 0] - 0.5) * s_m + 0.5 + tx_m
     w_y = (wrists[:, :, :, 1] - 0.5) * s_m + 0.5 + ty_m
-    wrists[:, :, :, 0] = torch.where(mask, w_x, wrists[:, :, :, 0])
-    wrists[:, :, :, 1] = torch.where(mask, w_y, wrists[:, :, :, 1])
-    out[:, :, 126:132] = wrists.reshape(B, T, 6)
+    wrists[:, :, :, 0] = torch.where(m, w_x, torch.zeros_like(w_x))
+    wrists[:, :, :, 1] = torch.where(m, w_y, torch.zeros_like(w_y))
+    wrists[:, :, :, 2] = torch.where(m, wrists[:, :, :, 2], torch.zeros_like(wrists[:, :, :, 2]))
+    out[:, :, SLICE_GLOBAL_WRISTS] = wrists.reshape(B, T, 6)
 
     if D >= 143:
         out = batch_recompute_derived_features(out)
@@ -368,32 +454,20 @@ def batch_time_stretch(
     rates: Optional[torch.Tensor] = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Co giãn trục thời gian với tốc độ rate ~ U(1-max_stretch, 1+max_stretch) và nội suy tuyến tính."""
-    out = x.clone()
-    B, T, D = out.shape
-    if B == 0 or T <= 2 or max_stretch <= 0.0:
-        return out
-
-    if rates is None:
-        rand_u = _rand((B,), out.device, generator)
-        rates = rand_u * (2.0 * max_stretch) + (1.0 - max_stretch)
-
-    t_grid = torch.arange(T, device=out.device, dtype=torch.float32)
-    p = t_grid.unsqueeze(0) * rates.unsqueeze(1)
-    p = torch.clamp(p, 0.0, float(T - 1))
-
-    i0 = torch.floor(p).long()
-    i1 = torch.clamp(i0 + 1, max=T - 1)
-    alpha = (p - i0.float()).unsqueeze(-1)  # (B, T, 1)
-
-    i0_expanded = i0.unsqueeze(-1).expand(B, T, D)
-    i1_expanded = i1.unsqueeze(-1).expand(B, T, D)
-
-    val0 = torch.gather(out, dim=1, index=i0_expanded)
-    val1 = torch.gather(out, dim=1, index=i1_expanded)
-
-    out = (1.0 - alpha) * val0 + alpha * val1
-    return out
+    """Time-stretch operation (explicitly disabled in Phase 0)."""
+    if rates is not None:
+        if not torch.allclose(rates, torch.ones_like(rates)):
+            raise ValueError(
+                "batch_time_stretch is disabled in Phase 0 because current implementations "
+                "do not share a validity-aware temporal contract."
+            )
+        return x.clone()
+    if max_stretch > 0.0:
+        raise ValueError(
+            "batch_time_stretch is disabled in Phase 0 because current implementations "
+            "do not share a validity-aware temporal contract."
+        )
+    return x.clone()
 
 
 def apply_augmentation_batch(
@@ -401,11 +475,7 @@ def apply_augmentation_batch(
     cfg: Any = None,
     generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
-    """Áp dụng chuỗi biến đổi dữ liệu theo batch (B, T, D) trực tiếp trên device.
-
-    Thứ tự áp dụng: Flip -> Rotate -> Shape Scale -> Scale Translate -> Jitter -> Time Stretch.
-    Mỗi phép chọn độc lập theo từng mẫu qua mặt nạ Bernoulli(prob).
-    """
+    """Apply sequence of augmentations per sample in batch on device."""
     if cfg is None or x.shape[0] == 0:
         return x.clone()
 
@@ -420,6 +490,8 @@ def apply_augmentation_batch(
     jitter_cfg = getattr(cfg, "jitter", {}) if not isinstance(cfg, dict) else cfg.get("jitter", {})
     stretch_cfg = getattr(cfg, "time_stretch", {}) if not isinstance(cfg, dict) else cfg.get("time_stretch", {})
 
+    applied = False
+
     # 1. Flip
     if _get_aug_param(flip_cfg, "enabled", False):
         prob = float(_get_aug_param(flip_cfg, "prob", 0.5))
@@ -429,6 +501,7 @@ def apply_augmentation_batch(
             indices = torch.nonzero(mask).squeeze(1)
             if len(indices) > 0:
                 out[indices] = batch_horizontal_flip(out[indices], swap_hands=swap_hands)
+                applied = True
 
     # 2. Rotate
     if _get_aug_param(rotate_cfg, "enabled", False):
@@ -441,6 +514,7 @@ def apply_augmentation_batch(
                 out[indices] = batch_random_rotate_2d(
                     out[indices], max_angle_deg=max_angle, generator=generator
                 )
+                applied = True
 
     # 3. Shape Scale
     if _get_aug_param(shape_scale_cfg, "enabled", False):
@@ -451,6 +525,7 @@ def apply_augmentation_batch(
             indices = torch.nonzero(mask).squeeze(1)
             if len(indices) > 0:
                 out[indices] = batch_shape_scale(out[indices], r=r, generator=generator)
+                applied = True
 
     # 4. Scale & Translate
     if _get_aug_param(scale_translate_cfg, "enabled", False):
@@ -469,6 +544,7 @@ def apply_augmentation_batch(
                     translate=translate,
                     generator=generator,
                 )
+                applied = True
 
     # 5. Jitter
     if _get_aug_param(jitter_cfg, "enabled", False):
@@ -479,17 +555,17 @@ def apply_augmentation_batch(
             indices = torch.nonzero(mask).squeeze(1)
             if len(indices) > 0:
                 out[indices] = batch_add_jitter(out[indices], sigma=sigma, generator=generator)
+                applied = True
 
-    # 6. Time Stretch
+    # 6. Time Stretch (must fail if enabled with positive prob and stretch)
     if _get_aug_param(stretch_cfg, "enabled", False):
-        prob = float(_get_aug_param(stretch_cfg, "prob", 0.3))
+        prob = float(_get_aug_param(stretch_cfg, "prob", 0.5))
         max_stretch = float(_get_aug_param(stretch_cfg, "max_stretch", 0.2))
         if prob > 0.0 and max_stretch > 0.0:
-            mask = _rand((B,), device, generator) < prob
-            indices = torch.nonzero(mask).squeeze(1)
-            if len(indices) > 0:
-                out[indices] = batch_time_stretch(
-                    out[indices], max_stretch=max_stretch, generator=generator
-                )
+            batch_time_stretch(out, max_stretch=max_stretch, generator=generator)
+            applied = True
 
+    # Final defensive recomputation
+    if applied:
+        out = batch_recompute_derived_features(out)
     return out

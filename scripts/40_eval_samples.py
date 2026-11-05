@@ -63,43 +63,18 @@ def extract_video_landmarks(
     )
 
 
-def apply_dominance_swap(
-    coords: np.ndarray,
-    masks: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Swap hand slots if hand 1 demonstrates higher motion displacement than hand 0."""
-    coords_swapped = coords.copy()
-    masks_swapped = masks.copy()
-    num_frames = len(coords)
-    displacement = [0.0, 0.0]
-
-    for s in range(2):
-        for t in range(1, num_frames):
-            if masks_swapped[t, s] and masks_swapped[t - 1, s]:
-                wrist_diff = coords_swapped[t, s, 0] - coords_swapped[t - 1, s, 0]
-                displacement[s] += float(np.linalg.norm(wrist_diff))
-
-    if displacement[1] > displacement[0]:
-        coords_swapped[:, [0, 1]] = coords_swapped[:, [1, 0]]
-        masks_swapped[:, [0, 1]] = masks_swapped[:, [1, 0]]
-
-    return coords_swapped, masks_swapped
 
 
 def apply_mirror_x(
     coords: np.ndarray,
     masks: np.ndarray,
 ) -> np.ndarray:
-    """Horizontally mirror landmarks along x-axis (x -> 1 - x) and re-sort slots by wrist x."""
+    """Horizontally mirror landmarks along x-axis (x -> 1 - x) and swap anatomical slots."""
     mirrored = coords.copy()
     # Mirror x coordinates for valid landmark points
     mirrored[..., 0] = np.where(masks[:, :, None], 1.0 - coords[..., 0], 0.0)
-
-    # Re-sort hands so left hand in frame (smaller x) is slot 0 when 2 hands detected
-    for t in range(len(mirrored)):
-        if masks[t, 0] and masks[t, 1] and mirrored[t, 0, 0, 0] > mirrored[t, 1, 0, 0]:
-            mirrored[t, [0, 1]] = mirrored[t, [1, 0]]
-
+    # Mirroring an image flips anatomical sides: left hand becomes right hand
+    mirrored = mirrored[:, [1, 0], :, :]
     return mirrored
 
 
@@ -146,14 +121,13 @@ def evaluate_samples(
         det_rate = float(masks.any(axis=1).mean()) if len(masks) > 0 else 0.0
         two_hand_rate = float(masks.all(axis=1).mean()) if len(masks) > 0 else 0.0
 
-        # Variant A: Standard video pipeline (dominance swap)
-        c_a, m_a = apply_dominance_swap(coords, masks)
-        pred_a = predictor.predict_raw_coordinates(c_a, m_a, top_k=3).top_k
+        # Variant A: Standard video pipeline (canonical shared preprocessing handles dominance)
+        pred_a = predictor.predict_raw_coordinates(coords, masks, top_k=3).top_k
 
-        # Variant B: Mirrored video pipeline (mirror then dominance swap)
+        # Variant B: Mirrored video pipeline (mirror x + swap anatomical slots)
         c_mirrored = apply_mirror_x(coords, masks)
-        c_b, m_b = apply_dominance_swap(c_mirrored, masks)
-        pred_b = predictor.predict_raw_coordinates(c_b, m_b, top_k=3).top_k
+        m_mirrored = masks[:, [1, 0]]
+        pred_b = predictor.predict_raw_coordinates(c_mirrored, m_mirrored, top_k=3).top_k
 
         # Check correctness
         a_top1 = len(pred_a) > 0 and pred_a[0][0].lower() == ground_truth

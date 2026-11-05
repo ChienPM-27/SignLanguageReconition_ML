@@ -123,3 +123,84 @@ python scripts/20_train.py --config configs/islr.yaml --seeds 42 43 44 --set run
 | **Test Top-1 Accuracy** | 0.8107 ± 0.002 | Duy trì hoặc cải thiện |
 | **Sample Videos Top-1 (Pipeline A)** | 7 / 20 (35.0%) | Tăng độ chính xác không phụ thuộc tay thuận |
 | **Sample Videos Top-3 (Pipeline A)** | 14 / 20 (70.0%) | Tăng độ bao phủ ứng viên đúng |
+
+
+---
+
+## 6. Giai đoạn P0: Chuẩn hóa Toàn diện Preprocessing, Augmentation & Inference Parity (P0.1 - P0.8)
+
+### 6.1. Mục tiêu và Nguyên nhân Thực hiện
+Trước khi thử nghiệm và so sánh các kiến trúc mô hình mới, hệ thống cần loại bỏ 4 điểm bất đồng bộ (inconsistencies) nghiêm trọng đã được kiểm chứng trong pipeline tiền xử lý và suy luận:
+1. **Pose Reflection sai lệch**: Phép lật gương cũ dùng $1 - x$ trên tọa độ pose đã được chuẩn hóa theo tâm torso (thay vì đổi dấu $-x$), đồng thời không hoán đổi khớp vai/khuỷu tay trái-phải và làm rò rỉ giá trị khác 0 vào các slot pose vắng.
+2. **Vận tốc giả mạo khi dropout (Stale Wrist / Torso Velocities)**: Hiệu số vận tốc giữa các frame không kiểm tra điều kiện hỗ trợ của cả hai đầu mút ($t$ và $t-1$), dẫn đến vận tốc nhảy đột biến khi tay hoặc thân xuất hiện/biến mất.
+3. **Nội suy lấp đầy vô hạn (Unbounded Imputation Artifacts)**: Resampling cũ nội suy tuyến tính toàn bộ các khoảng trống kéo dài hàng chục frame, tạo ra các tọa độ tay nhân tạo trôi lơ lửng không có thực trong video.
+4. **Bất đồng bộ giữa Huấn luyện và Suy luận (Train/Inference Divergence)**: Pipeline suy luận (inference) và trích xuất video trực tiếp dùng các magic numbers, heuristic xác định tay thuận và cắt gọt frame độc lập với cấu hình huấn luyện.
+
+### 6.2. Chi tiết các Thay đổi Kỹ thuật
+
+#### P0.1: Đóng băng Contract Đặc trưng & Schema Versioning
+- Khởi tạo `src/features/schema.py`:
+  - `PREPROCESS_SCHEMA_VERSION = 2`.
+  - Hằng số kích thước đặc trưng: `FEATURE_DIM_HANDS = 143`, `FEATURE_DIM_HANDS_POSE = 160`.
+  - Slice indexing rõ ràng cho cả hai bố cục đặc trưng (`HANDS_LANDMARKS_SLICE`, `POSE_LANDMARKS_SLICE`, `WRIST_COORDS_SLICE`, `RELATIVE_WRIST_SLICE`, `WRIST_VELOCITY_SLICE`, `TORSO_VELOCITY_SLICE`, `SUPPORT_MASKS_SLICE`).
+  - Hoán vị giải phẫu pose khi lật gương: `POSE_FLIP_PERMUTATION = (1, 0, 3, 2)` (hoán đổi vai trái $\leftrightarrow$ vai phải, khuỷu trái $\leftrightarrow$ khuỷu phải).
+  - Hàm `get_feature_dim(feature_set: str) -> int`.
+  - Hàm `compute_preprocess_identity(cfg_or_dict: Union[ISLRConfig, dict]) -> str`: Mã hóa SHA256 canonical JSON của các tham số tiền xử lý.
+- Cập nhật `configs/islr.yaml` và `src/utils/config.py`:
+  - Thêm `normalization_epsilon: 0.0001` vào `PreprocessConfig`.
+  - Kiểm tra `time_stretch`: Tạm thời vô hiệu hóa (`enabled: false`), cấm kích hoạt khi chưa có validity-aware temporal contract.
+  - Kiểm tra xung đột: Cấm `swap_hands=True` khi `dominant_hand=True` trong cấu hình.
+  - Thêm hàm `build_config_from_dict(d: dict) -> ISLRConfig` hỗ trợ nạp cấu hình đã lưu trong checkpoint.
+
+#### P0.2 & P0.3: Sửa Bounded Interpolation, Temporal Resampling & Gating Vận tốc
+- Cập nhật `src/features/normalization.py`:
+  - **`interpolate_bounded_gaps`**: Chỉ nội suy các khoảng trống có độ dài $\le \text{max\_gap\_frames}$. Các khoảng trống lớn hơn bị xóa về 0 hoàn toàn và hạ mask về 0.
+  - **`resample_temporal`**: Nội suy hỗ trợ (support-aware). Chỉ nội suy giữa hai đầu mút hợp lệ; nếu khoảng cách thời gian giữa hai quan sát quá lớn, giữ nguyên giá trị 0. Bẻ hòa (tie-break) chỉ số theo khung hình trước đó; giữ nguyên giá trị khi chỉ có một điểm đầu mút hợp lệ.
+  - **`compute_feature_vector`**:
+    - Vận tốc cổ tay: $v[t, h] = w[t, h] - w[t-1, h]$ nếu và chỉ nếu cả $mask[t, h]$ và $mask[t-1, h]$ đều hợp lệ; ngược lại $v[t, h] = 0$.
+    - Cổ tay tương đối: $r[t] = w[t, 0] - w[t, 1]$ nếu và chỉ nếu cả hai tay cùng hợp lệ; ngược lại $r[t] = 0$.
+    - Vận tốc torso: $u[t] = C[t] - C[t-1]$ nếu và chỉ nếu pose hợp lệ ở cả hai frame $t$ và $t-1$; ngược lại $u[t] = 0$.
+    - Slot không được hỗ trợ luôn được zero hóa nghiêm ngặt.
+
+#### P0.4: Chuẩn hóa Phép Lật Pose (Pose Reflection) trong NumPy & PyTorch
+- Cập nhật `src/data/augmentation.py` (`horizontal_flip`) và `src/data/augmentation_gpu.py` (`batch_horizontal_flip`):
+  - Tọa độ vai và khuỷu tay chuẩn hóa theo tâm thân: $q'_{xy} = (-q_x, q_y)$ (đổi dấu $x$, giữ nguyên $y$).
+  - Hoán vị giải phẫu khớp: $q'[t, k] = F \cdot q[t, \pi[k]]$ với $\pi = [1, 0, 3, 2]$.
+  - Vận tốc torso: $u'_x = -u_x$, $u'_y = u_y$.
+  - Slot vắng giữ nguyên giá trị 0 tuyệt đối.
+
+#### P0.5: Đồng bộ Tính Nhất quán Động học cho Augmentation (Internal Motion Consistency)
+- Cập nhật `random_rotate_2d`, `add_jitter`, `scale_translate` trong cả hai backend:
+  - Tự động gọi tính lại các đặc trưng phái sinh (`recompute_derived_features`) sau khi biến đổi tọa độ cổ tay.
+  - `add_jitter`: Đặt nhiễu tại gốc cổ tay cục bộ (landmark 0) bằng 0 tuyệt đối để bảo toàn gốc tọa độ hình dạng bàn tay.
+  - `apply_augmentation` / `apply_augmentation_batch`: Chỉ tính lại đặc trưng khi có ít nhất một phép biến đổi thực sự được áp dụng, bảo toàn dữ liệu khi `prob=0.0`.
+  - `time_stretch` / `batch_time_stretch`: Bắt lỗi `ValueError` rõ ràng khi nhận yêu cầu stretch khác 1.0.
+
+#### P0.6: Dùng Chung Pipeline Tiền Xử lý giữa Huấn luyện và Suy luận
+- Tạo mới `src/features/pipeline.py`:
+  - Hàm chuẩn hóa cốt lõi `prepare_landmark_sequence`: Không I/O, độc lập nền tảng.
+  - Xác thực shape, số lượng frame hợp lệ (`min_valid_frames`), áp dụng gating loại bỏ clip không đủ chất lượng.
+  - Xác định tay thuận thống nhất: Đếm số frame hợp lệ $n_h$, giải quyết hòa bằng tổng độ dài quỹ đạo di chuyển cổ tay $E_h$, ưu tiên tay trái khi hòa tuyệt đối.
+  - Cắt gọt khoảng lặng đầu/cuối clip (`pad_frames_around`) trên cùng một khoảng chỉ số $[start, end)$ cho cả tay và pose.
+- Cập nhật `src/data/preprocess.py`: Ủy thác toàn bộ xử lý chuỗi cho `prepare_landmark_sequence`.
+- Cập nhật `src/features/landmark_extractor.py`: Xuất đúng slot giải phẫu (slot 0: Left, slot 1: Right), không tự ý hoán đổi tay thuận trước khi đưa vào pipeline.
+- Cập nhật `src/inference/predictor.py`:
+  - Nạp và xác thực `resolved_config`, `schema_version`, kiểm tra tương thích giữa `get_feature_dim` và `model.input_size`.
+  - Sử dụng chung `prepare_landmark_sequence` cho dữ liệu raw coordinates và video trích xuất.
+  - Từ chối suy luận trên tọa độ raw đối với checkpoint cũ chưa có metadata phiên bản và cấu hình.
+- Cập nhật `app.py`: Kết nối trực tiếp `predict_video` qua `predictor`.
+
+#### P0.7: Gắn Kết Caches và Checkpoints với Preprocessing Identity
+- Cập nhật `src/training/train.py` và `scripts/20_train.py`:
+  - Lưu trữ `resolved_config`, `schema_version = 2`, và `preprocess_identity` vào checkpoint `pt`.
+  - Xác thực khớp `preprocess_identity` giữa checkpoint và dataset khi tiếp tục huấn luyện (resume).
+- Cập nhật `src/data/dataset.py`:
+  - Kiểm tra file `preprocess_meta.json` trong thư mục cache, xác thực `schema_version == PREPROCESS_SCHEMA_VERSION`.
+
+### 6.3. Quy tắc Di chuyển (Migration Rules) cho Caches & Checkpoints
+1. **Dữ liệu Features đã Cache (`features_dir`)**:
+   - Mọi mảng `.npy` được trích xuất từ phiên bản cũ (schema version 1 hoặc không có `preprocess_meta.json`) bị từ chối tự động.
+   - Khi chạy huấn luyện hoặc kiểm tra dataset, cần tạo lại cache bằng script `scripts/10_preprocess.py`.
+2. **Model Checkpoints**:
+   - Checkpoints cũ không chứa `schema_version` sẽ bị từ chối khi gọi `predict_raw_coordinates` hoặc `predict_video` trên `ISLRPredictor`.
+   - Để tiếp tục sử dụng, mô hình cần được huấn luyện lại trên tập features mới có `schema_version = 2`.

@@ -317,6 +317,7 @@ class PreprocessConfig:
     sequence_length: int = 32
     num_workers: int = 4
     dominant_hand: str = "auto"
+    normalization_epsilon: float = 0.0001
 
     def validate(self) -> None:
         if not isinstance(self.trim_no_hand, bool):
@@ -331,6 +332,8 @@ class PreprocessConfig:
             raise ValueError("preprocess.sequence_length must be an integer >= 4.")
         if type(self.num_workers) is bool or not isinstance(self.num_workers, int) or self.num_workers < 1:
             raise ValueError("preprocess.num_workers must be an integer >= 1.")
+        if type(self.normalization_epsilon) is bool or not isinstance(self.normalization_epsilon, (int, float)) or self.normalization_epsilon <= 0:
+            raise ValueError("preprocess.normalization_epsilon must be a positive float.")
 
 
 @dataclass
@@ -400,6 +403,11 @@ class AugmentationConfig:
         ]:
             if not isinstance(sub, dict):
                 raise TypeError(f"augmentation.{name} must be a dictionary.")
+        if self.time_stretch.get("enabled", False):
+            raise ValueError(
+                "augmentation.time_stretch is disabled in Phase 0 because current implementations "
+                "do not share a validity-aware temporal contract."
+            )
 
 
 @dataclass
@@ -409,10 +417,11 @@ class ModelConfig:
     num_layers: int = 2
     dropout: float = 0.3
     bidirectional: bool = False
+    pooling: str = "mean_max"
 
     def validate(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError("model.name must be a non-empty string.")
+        if not isinstance(self.name, str) or self.name.upper() not in ("GRU", "LSTM"):
+            raise ValueError(f"model.name must be 'GRU' or 'LSTM'. Got '{self.name}'.")
         if type(self.hidden_size) is bool or not isinstance(self.hidden_size, int) or self.hidden_size < 8:
             raise ValueError("model.hidden_size must be an integer >= 8.")
         if type(self.num_layers) is bool or not isinstance(self.num_layers, int) or self.num_layers < 1:
@@ -421,6 +430,8 @@ class ModelConfig:
             raise ValueError("model.dropout must be a float between 0.0 and 1.0.")
         if not isinstance(self.bidirectional, bool):
             raise TypeError("model.bidirectional must be a boolean.")
+        if not isinstance(self.pooling, str) or self.pooling not in ("mean_max", "attention", "mean", "last"):
+            raise ValueError(f"model.pooling must be one of: 'mean_max', 'attention', 'mean', 'last'. Got '{self.pooling}'.")
 
 
 @dataclass
@@ -525,6 +536,12 @@ class Config:
             raise ValueError(
                 f"eda.num_landmark_probe_files ({self.eda.num_landmark_probe_files}) "
                 f"cannot exceed data.sample_budget_total_files ({self.data.sample_budget_total_files})."
+            )
+        use_dominant = self.preprocess.dominant_hand not in (False, "false", "disabled", "none")
+        if use_dominant and self.augmentation.flip.get("swap_hands", False):
+            raise ValueError(
+                "Conflicting configuration: augmentation.flip.swap_hands cannot be True when "
+                "preprocess.dominant_hand is enabled. Slot 0 must retain its documented meaning."
             )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -677,6 +694,11 @@ def _build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:
     config = Config(**sections)
     config.validate()
     return config
+
+
+def build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:
+    """Build and strictly validate Config from a dictionary."""
+    return _build_config_from_dict(raw_dict)
 
 
 def load_config(

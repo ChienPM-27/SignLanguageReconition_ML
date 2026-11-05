@@ -78,9 +78,10 @@ preprocess:
   sequence_length: 32             # Fixed temporal length to resample sequences to
   num_workers: 4                  # Workers for parallel preprocessing
   dominant_hand: "auto"           # Determine dominant hand by data ('auto' or disabled)
+  normalization_epsilon: 0.0001   # Threshold for scale and palm normalization
 
 features:
-  set: "hands"                    # Feature landmark set: 'hands' or 'hands_pose'
+  set: "hands_pose"               # Feature landmark set: 'hands' or 'hands_pose'
 
 split:
   method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'
@@ -125,6 +126,7 @@ model:
   num_layers: 2
   dropout: 0.3
   bidirectional: false
+  pooling: "mean_max"             # Allowed: "mean_max", "attention", "mean", "last" 
 
 training:
   preload: "device"               # Nạp trước dữ liệu: 'none' (đọc đĩa từng mẫu), 'ram' (nạp vào RAM CPU), 'device' (nạp thẳng lên GPU/CPU, tự quản lý loader, bỏ qua num_workers)

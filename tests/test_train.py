@@ -32,7 +32,7 @@ from src.training.train import (
 from src.utils.config import load_config
 
 
-def _setup_synthetic_train_environment(tmp_path: Path, n_samples: int = 12, n_classes: int = 3):
+def _setup_synthetic_train_environment(tmp_path: Path, n_samples: int = 12, n_classes: int = 3, feature_dim: int = 143):
     splits_dir = tmp_path / "data" / "splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
     feat_dir = tmp_path / "cache" / "features"
@@ -57,7 +57,7 @@ def _setup_synthetic_train_environment(tmp_path: Path, n_samples: int = 12, n_cl
             seq_id = f"{filename}_{i:03d}"
             npy_path = feat_dir / f"{seq_id}.npy"
             # Distinct pattern per class to allow fast overfit / learning
-            arr = np.ones((32, 143), dtype=np.float32) * (lbl + 1.0) * 0.5
+            arr = np.ones((32, feature_dim), dtype=np.float32) * (lbl + 1.0) * 0.5
             np.save(str(npy_path), arr)
             rows.append([seq_id, f"signer_{i % 3}", f"sign_{lbl}", lbl, str(npy_path)])
 
@@ -120,8 +120,10 @@ def test_create_scheduler_types() -> None:
 
 
 def test_run_overfit_check(tmp_path: Path) -> None:
-    _, train_csv, _, _, class_names = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=3)
     cfg = load_config(overrides=[f"env.local_root={tmp_path}"])
+    from src.features.normalization import get_feature_dim
+    dim = get_feature_dim(cfg.features.set)
+    _, train_csv, _, _, class_names = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=3, feature_dim=dim)
     device = torch.device("cpu")
     run_dir = tmp_path / "runs" / "test_overfit"
 
@@ -139,8 +141,10 @@ def test_run_overfit_check(tmp_path: Path) -> None:
 
 
 def test_run_baseline_rf(tmp_path: Path) -> None:
-    _, train_csv, _, test_csv, class_names = _setup_synthetic_train_environment(tmp_path, n_samples=12, n_classes=3)
     cfg = load_config(overrides=[f"env.local_root={tmp_path}"])
+    from src.features.normalization import get_feature_dim
+    dim = get_feature_dim(cfg.features.set)
+    _, train_csv, _, test_csv, class_names = _setup_synthetic_train_environment(tmp_path, n_samples=12, n_classes=3, feature_dim=dim)
     run_dir = tmp_path / "runs" / "test_rf"
 
     report = run_baseline_rf(
@@ -157,7 +161,10 @@ def test_run_baseline_rf(tmp_path: Path) -> None:
 
 
 def test_cli_train_pipeline_end_to_end(tmp_path: Path) -> None:
-    _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2)
+    cfg = load_config()
+    from src.features.normalization import get_feature_dim
+    dim = get_feature_dim(cfg.features.set)
+    _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2, feature_dim=dim)
 
     overrides = [
         f"env.local_root={tmp_path}",
@@ -360,3 +367,28 @@ def test_early_stopping_min_delta_and_min_epochs(tmp_path: Path) -> None:
     # Should run at least 4 epochs because min_epochs=4
     assert len(h["train_loss"]) >= 4
 
+
+
+def test_amp_gradscaler_initialization(tmp_path: Path) -> None:
+    """Verify GradScaler initialization API works correctly without TypeError."""
+    scaler = torch.amp.GradScaler("cuda")
+    assert scaler is not None
+
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=4, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+
+    h = train_gru(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=1,
+        amp=True,
+        device=device,
+        verbose=False,
+    )
+    assert len(h["train_loss"]) == 1
