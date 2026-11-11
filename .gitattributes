@@ -1,1 +1,4 @@
 graphify-out/graph.json merge=graphify
+# Giữ nguyên bytes của snapshots qua checkout Windows và Linux.
+reports/ablation-study/shared/config.yaml text eol=lf
+reports/ablation-study/shared/source_commit.txt text eol=lf

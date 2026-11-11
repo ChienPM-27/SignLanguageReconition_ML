@@ -17,7 +17,7 @@ Seeds 42/43/44; training từ initialization mới; evaluation.evaluate_test=fal
 
 | Trường | Giá trị |
 | --- | --- |
-| Source commit SHA / ref | PENDING |
+| Source commit SHA / ref | f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2 / codex/ablation-study |
 | Exact preprocess / split / train commands | PENDING |
 | Resolved config / SHA256 | PENDING |
 | Dataset/selection/vocabulary identity | PENDING |

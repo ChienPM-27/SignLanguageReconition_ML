@@ -22,4 +22,7 @@ Không đưa số liệu fixtures vào REPORT.md hoặc bảng campaign.
 Pyflakes trên tools/src/scripts/tests/app.py: 0 findings, exit 0 (.venv).
 Full tests trên working tree: 249 passed, 1 warning do CUDA unavailable;
 81.53s, exit 0. Dùng basetemp riêng và tắt pytest cache provider.
-Source freeze và real-data GPU campaign vẫn pending.
+Source freeze: f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2; config snapshot ở shared/.
+Canonical config của 6 runs load thành công với D160/160/162/162/192/212.
+Notebook JSON/Python syntax: 10 code cells hợp lệ (không thực thi notebook magics).
+Frozen data split và real-data GPU campaign vẫn pending.

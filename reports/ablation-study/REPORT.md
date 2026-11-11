@@ -11,8 +11,8 @@ Bảng đo tự động sau train: RESULTS.md và RESULTS.json; dùng tools/summ
 
 | Trường | Giá trị |
 | --- | --- |
-| Source commit / ref | PENDING |
-| Canonical config snapshot / SHA256 | PENDING |
+| Source commit / ref | f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2 / codex/ablation-study |
+| Canonical config snapshot / SHA256 | shared/config.yaml / ef16f628cecce00be72cb8dd259140b0d21fbf448548bd8785a6d48f2baed0dd |
 | Dataset và ordered 20-gloss vocabulary / SHA256 | PENDING |
 | Frozen split manifest / SHA256 | PENDING |
 | Selection provenance / historical test-use limitation | PENDING |
@@ -57,13 +57,13 @@ PENDING nghĩa là chưa đo; không điền 0 hoặc giá trị kỳ vọng tha
 - Source và protocol khớp giữa A/B/C: PENDING.
 - Per-gloss confusion, per-signer metrics, best epochs, train–val gap: PENDING.
 - Hardware/runtime/library versions; giới hạn khi so training time: PENDING.
-- Source syntax / full tests / pyflakes cho commit đã freeze: PENDING.
+- Source engineering verification: 249 tests passed; pyflakes sạch; SOURCE_STATUS.md.
 
 Kiểm tra working tree ngày chuẩn bị: ast.parse 67 file Python, 0 lỗi cú pháp.
 Đây không phải full tests/pyflakes hoặc chứng nhận source commit đã freeze.
 Tools lưu log/tổng hợp: 16 checks pass trên fixtures tự tạo; xem TOOL_VALIDATION.md.
 Working tree: full tests 249 passed, 1 warning (CUDA unavailable), 81.53s;
-pyflakes trên tools/src/scripts/tests/app.py sạch. Source commit vẫn chưa freeze.
+pyflakes trên tools/src/scripts/tests/app.py sạch. Source freeze: f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2.
 Chưa có model training metrics thực tế trong bảng này.
 
 ## Quyết định sau campaign

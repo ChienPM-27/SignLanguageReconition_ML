@@ -1,92 +1,67 @@
-# Kiểm tra source cho ablation study
+# Source freeze cho ablation study
 
-Ngày kiểm tra: 2026-11-11 (+07:00).
+Ngày: 2026-11-11 (+07:00).
+Branch: `codex/ablation-study`.
+Source commit dùng chung: `f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2`.
 
-**Kết luận: source đủ cho F0–F4 chưa nằm trong main local hoặc main trên GitHub.**
-Working tree có implementation mở rộng chưa commit; full tests mới chạy đạt
-249 passed và pyflakes sạch. Source này vẫn cần commit/freeze trước handoff.
+**Source v4 đã được commit trên branch ablation-study.**
+Cả 3 thành viên checkout branch này và dùng source SHA ở shared/source_commit.txt.
+Report commits có thể khác nhau nếu src/scripts/configs/requirements.txt vẫn khớp
+source commit; runner kiểm tra điều này trước train.
 
-| Thành phần | main local tại 8e335b7 | Working tree hiện tại |
-| --- | --- | --- |
-| Preprocessing schema | v2 | v4 |
-| wrist_reference / palm_scale / tips / bends | Chưa có trong canonical YAML | Có đủ 4 options |
-| Frozen signer split | Chưa có split.manifest_path trong YAML | Có manifest/rebind support |
-| Validation-only mặc định | Chưa có evaluation.evaluate_test trong YAML | evaluate_test=false |
-| Reliability/artifact/checkpoint helpers | Chưa có 3 modules bên dưới | Có nhưng untracked |
-| Standalone evaluator | Chưa có scripts/21_evaluate.py | Có nhưng untracked |
-| GRU/LSTM | Có | Có |
-| MaskedTCN / HandGraphTCN | Chưa tích hợp | Chưa tích hợp |
+## Nội dung source
 
-main local, cached origin/main và main trên GitHub cùng SHA:
-`8e335b7a46f1e2e9d1b0c47850aa053c852b55f0`.
+| Thành phần | Trạng thái trên branch |
+| --- | --- |
+| Preprocessing schema | v4 |
+| Feature options | wrist_reference, palm_scale, fingertip_displacement, bend_cosines |
+| Reliability metadata | src/features/validity.py; .validity.npz cạnh .npy |
+| Cache/artifact identity | src/utils/artifacts.py; hashes và strict ownership checks |
+| Checkpoint/resume | src/utils/checkpoint.py; metadata validation và atomic rollback |
+| Frozen signer split | split.manifest_path; provenance/rebind/coverage checks |
+| Validation-only training | evaluation.evaluate_test=false |
+| Standalone evaluator | scripts/21_evaluate.py |
+| Regression tests | test_evaluate, test_features_wave_b, test_wave_a_regression, test_wave_b_regression |
+| Model support | GRU/LSTM; TCN/HandGraphTCN chưa tích hợp |
+| Notebook | Đồng bộ branch ablation-study, mô tả schema v4, explicit final-test checkpoint |
 
-Đã xác minh GitHub main bằng git ls-remote origin refs/heads/main ngày 2026-11-11.
+main local và main trên GitHub được kiểm tra vẫn ở
+`8e335b7a46f1e2e9d1b0c47850aa053c852b55f0` (schema v2).
+Team lấy source từ codex/ablation-study cho campaign này.
 
-Các file phụ thuộc quan trọng chưa tracked tại thời điểm kiểm tra:
-
-- `src/features/validity.py`
-- `src/utils/artifacts.py`
-- `src/utils/checkpoint.py`
-- `scripts/21_evaluate.py`
-- `tests/test_evaluate.py`
-- `tests/test_features_wave_b.py`
-- `tests/test_wave_a_regression.py`
-- `tests/test_wave_b_regression.py`
-
-Nhiều file configs/src/scripts/tests và notebook cũng modified.
-Không chỉ commit YAML: phải đưa đầy đủ các thay đổi liên quan và modules mới
-vào source commit được review trước handoff.
-
-## Handoff source
+## Shared handoff
 
 | Trường | Giá trị |
 | --- | --- |
-| Source ref đã chia sẻ | PENDING |
-| Source commit SHA dùng cho cả A/B/C | PENDING |
-| Config snapshot SHA256 | PENDING |
-| Shared frozen split SHA256 | PENDING |
-| Ordered vocabulary/selection SHA256 | PENDING |
-| Full tests command / result / artifact | Working tree: 249 passed, 1 warning, 81.53s; source freeze PENDING |
-| Pyflakes command / result / artifact | Working tree + tools: 0 findings, exit 0; source freeze PENDING |
-| Thành viên kiêm chốt source / reviewer | PENDING |
+| Source ref | codex/ablation-study |
+| Source SHA dùng cho A/B/C | f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2 |
+| Config snapshot | shared/config.yaml, lấy từ canonical configs/islr.yaml tại source SHA |
+| Config snapshot SHA256 | ef16f628cecce00be72cb8dd259140b0d21fbf448548bd8785a6d48f2baed0dd |
+| Frozen split manifest / SHA256 | PENDING — A chuẩn bị trên dữ liệu thật, B/C dùng cùng file |
+| Selection/vocabulary / SHA256 | PENDING — giữ cùng ordered 20 glosses |
+| Dataset/class/signer/sample counts, exclusions | PENDING — xuất sau preprocessing/rebind |
+| Real-data model metrics / GPU measurements | PENDING |
 
-Source freeze có thể nằm trên branch implementation được review hoặc main sau
-merge. Report branch lưu source ref/SHA thực tế; tên branch không thay cho SHA.
-Đừng gửi team clone main hiện tại rồi chạy commands v4.
+Copy shared/config.yaml và shared/source_commit.txt vào runtime shared package.
+A bổ sung selection/glosses.csv và split_manifest.json; giao cùng package cho B/C.
+Không thay hashes bằng giá trị giả; không regenerate signer assignment riêng từng run.
 
-Các kiểm tra trong phiên này là Git tree/config/source inspection và syntax
-inspection được ghi trong báo cáo tổng hợp. Không có GPU measurements mới.
-Execution log cũ có synthetic verification, nhưng không dùng kết quả cũ để
-certify một source commit mới.
+## Verification
 
-Syntax inspection mới: Python ast.parse trên 67 file src/scripts/tests,
-0 lỗi cú pháp. Runtime .venv đã dùng được sau khi quyền workspace được cấp.
-Pyflakes: python -m pyflakes reports/ablation-study/tools src scripts tests app.py,
-0 findings, exit 0. Full tests: python -m pytest tests -q -p no:cacheprovider
-với basetemp riêng trong workspace: 249 passed, 1 warning, 81.53s, exit 0.
-Warning do CUDA không có tại máy local; không có GPU measurements mới.
-Kiểm tra working tree không đồng nghĩa source v4 đã có trên main.
+- Full tests: `python -m pytest tests -q -p no:cacheprovider` với basetemp riêng:
+  **249 passed, 1 warning, 81.53s, exit 0**. Warning do local CUDA unavailable.
+  Source Python được commit khớp working tree đã chạy tests; chỉ chuẩn hóa EOF.
+- Pyflakes: `python -m pyflakes src scripts tests app.py reports/ablation-study/tools`:
+  **0 findings, exit 0**.
+- Canonical config của cả 6 runs load thành công và D đúng: 160/160/162/162/192/212.
+- Notebook JSON và Python syntax của 10 code cells hợp lệ; notebook magics được
+  loại khỏi syntax check. Notebook chưa được chạy end-to-end.
+- Tools lưu log/tổng hợp: **16 checks pass** trên fixtures tự tạo; xem TOOL_VALIDATION.md.
 
-## Trạng thái branch báo cáo
+Engineering checks không thay thế kết quả real-data training.
 
-Đã tạo bộ báo cáo trong reports/ablation-study và 2 tools lưu log/tổng hợp bảng.
-Đã tạo và checkout branch codex/ablation-study từ main tại 8e335b7.
-Branch báo cáo chỉ commit tài liệu và tools trong reports/ablation-study.
-Các thay đổi source có sẵn vẫn giữ nguyên và chưa được đưa vào commit mới.
+## Cập nhật báo cáo
 
-Workflow cập nhật báo cáo tiếp theo:
-
-```bash
-git switch codex/ablation-study
-git add -f -- "reports/ablation-study/*.md" "reports/ablation-study/runs/*.md" "reports/ablation-study/tools/*.py"
-git commit -m "docs: prepare ablation study protocol and team reports"
-git push -u origin codex/ablation-study
-```
-
-Commit báo cáo này không chứa corrected source đang modified/untracked.
-Team cần source freeze riêng trước khi giao jobs cho A/B/C.
-
-Các tools mới: run_ablation.py giữ stdout/stderr, metadata và ZIP; summarize_results.py
-tạo bảng validation Markdown/JSON từ artifacts thật. Kiểm tra tools: 16 checks
-pass trên fixtures self-contained; xem TOOL_VALIDATION.md. Kết quả này không
-thay thế full source tests/pyflakes hoặc real-data training.
+Source/config snapshots đã freeze; report từng run và RESULTS.md/JSON cập nhật
+từ artifacts thật. Mỗi người chỉ sửa 2 run reports được phân công. ZIP/model/cache
+lớn lưu artifact storage; Git giữ báo cáo và numerical result JSON cần thiết.

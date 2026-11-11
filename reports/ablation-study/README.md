@@ -3,8 +3,9 @@
 Ngày chuẩn bị: 2026-11-11 (+07:00).
 Branch báo cáo: `codex/ablation-study`.
 Trạng thái campaign: **PREPARING — chưa có kết quả train thực tế**.
-Branch lưu phân công, tools lưu log và mẫu báo cáo. Source v4 cho F0–F4 còn
-modified/untracked và cần source freeze riêng trước campaign; xem SOURCE_STATUS.md.
+Branch chứa source v4, phân công, tools lưu log và mẫu báo cáo.
+Source đã freeze tại `f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2`;
+shared/config.yaml và shared/source_commit.txt đã có trong repo. Xem SOURCE_STATUS.md.
 
 Có 6 cấu hình × seeds42/43/44 = 18 lần train model.
 **Mỗi người phụ trách 2 cấu hình = 6 model. Cả 3 đều train.**
@@ -46,10 +47,11 @@ Không dùng T4 balanced preset. Feature campaign dùng validation; evaluate_tes
 
 ## Shared handoff trước khi train
 
-- Chốt một source commit đã chia sẻ có schema v4, feature options và frozen
-  split. main local đã kiểm tra vẫn là schema v2; corrected source chưa commit.
-- Chạy full tests + pyflakes trên source commit; lưu evidence.
-- Snapshot canonical configs/islr.yaml thành shared `config.yaml`.
+- Cả 3 checkout `codex/ablation-study`; dùng source SHA trong
+  `reports/ablation-study/shared/source_commit.txt`. main vẫn là schema v2.
+- Source đã đạt 249 tests passed và pyflakes sạch; evidence ở SOURCE_STATUS.md.
+- Copy snapshot canonical từ `reports/ablation-study/shared/config.yaml`
+  và source_commit.txt vào runtime shared package.
   Ordered 20-gloss vocabulary và label_map phải giống nhau cho cả 3.
 - Preprocess F0 bằng source v4; tạo signer split đúng một lần với
   `scripts/10_prepare_data.py --stage split`, `split.manifest_path=null`.
@@ -68,6 +70,9 @@ Trên Kaggle attach dataset asl-signs và đặt shared package ở đường d�
 
 ```bash
 SHARED=/kaggle/working/ablation_shared
+mkdir -p "$SHARED"
+cp reports/ablation-study/shared/config.yaml reports/ablation-study/shared/source_commit.txt "$SHARED/"
+# A bổ sung selection/glosses.csv và split_manifest.json; B/C nhận cùng package.
 
 # Trainer A, runtime A:
 python reports/ablation-study/tools/run_ablation.py F0 "$SHARED"
