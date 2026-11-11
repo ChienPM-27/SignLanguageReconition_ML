@@ -16,7 +16,7 @@ import copy
 import csv
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -24,6 +24,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from src.features.schema import PREPROCESS_SCHEMA_VERSION
+from src.utils.checkpoint import validate_checkpoint_metadata, validate_model_architecture
 from .metrics import compute_macro_f1, compute_top_k_accuracy
 
 
@@ -170,6 +171,9 @@ def save_checkpoint(
     resolved_config: Optional[Dict[str, Any]] = None,
     schema_version: int = PREPROCESS_SCHEMA_VERSION,
     preprocess_identity: Optional[str] = None,
+    class_names: Optional[List[str]] = None,
+    label_map: Optional[Dict[str, int]] = None,
+    seed: Optional[int] = None,
 ) -> Path:
     """Lưu stateful checkpoint phục vụ khả năng resume hoàn chỉnh."""
     path = Path(checkpoint_path)
@@ -188,6 +192,9 @@ def save_checkpoint(
         "schema_version": schema_version,
         "preprocess_identity": preprocess_identity,
         "resolved_config": resolved_config,
+        "class_names": class_names,
+        "label_map": label_map,
+        "seed": seed,
     }
     torch.save(payload, str(path))
     return path
@@ -256,6 +263,9 @@ def train_gru(
     amp: bool = False,
     resolved_config: Optional[Dict[str, Any]] = None,
     preprocess_identity: Optional[str] = None,
+    class_names: Optional[List[str]] = None,
+    label_map: Optional[Dict[str, int]] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, list]:
     """Huấn luyện mô hình GRU với Stateful Checkpoint, Resume, CSV metric streaming và Early Stopping cải tiến."""
     model.to(device)
@@ -280,38 +290,130 @@ def train_gru(
         "lr": [],
     }
 
+    # Resolve class_names and label_map if not explicitly supplied
+    if class_names is None:
+        if train_loader is not None and hasattr(train_loader, "dataset") and getattr(train_loader.dataset, "class_names", None):
+            class_names = list(train_loader.dataset.class_names)
+        elif val_loader is not None and hasattr(val_loader, "dataset") and getattr(val_loader.dataset, "class_names", None):
+            class_names = list(val_loader.dataset.class_names)
+    if label_map is None:
+        if train_loader is not None and hasattr(train_loader, "dataset") and getattr(train_loader.dataset, "label_map", None):
+            label_map = dict(train_loader.dataset.label_map)
+        elif val_loader is not None and hasattr(val_loader, "dataset") and getattr(val_loader.dataset, "label_map", None):
+            label_map = dict(val_loader.dataset.label_map)
+    if class_names is None and hasattr(model, "num_classes") and model.num_classes is not None:
+        class_names = [f"class_{i}" for i in range(model.num_classes)]
+    if label_map is None and class_names is not None:
+        label_map = {name: idx for idx, name in enumerate(class_names)}
+
     # Phục hồi trạng thái huấn luyện nếu có resume_checkpoint_path
-    if resume_checkpoint_path is not None and Path(resume_checkpoint_path).is_file():
-        ckpt_info = load_checkpoint(
-            checkpoint_path=resume_checkpoint_path,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            device=device,
+    if resume_checkpoint_path is not None:
+        resume_p = Path(resume_checkpoint_path)
+        if not resume_p.is_file():
+            raise FileNotFoundError(
+                f"Resume checkpoint file not found: {resume_p}. Silent fresh start is strictly prohibited."
+            )
+
+        target_device = device if device is not None else torch.device("cpu")
+        ckpt_payload = torch.load(str(resume_p), map_location=target_device, weights_only=False)
+
+        if not isinstance(ckpt_payload, dict) or "model_state_dict" not in ckpt_payload:
+            raise ValueError(f"Invalid checkpoint payload at {resume_p}: missing 'model_state_dict'.")
+
+        # 1. Canonical checkpoint metadata validation
+        saved_cfg, ckpt_classes, ckpt_label_map = validate_checkpoint_metadata(
+            ckpt_payload=ckpt_payload,
+            checkpoint_path=resume_p,
+            expected_preprocess_identity=preprocess_identity,
+            allow_legacy=False,
+            require_optimizer=(optimizer is not None),
         )
-        if preprocess_identity is not None:
-            saved_identity = ckpt_info.get("preprocess_identity")
-            if saved_identity is not None and saved_identity != preprocess_identity:
+
+        # 2. Strict classes and label_map verification against runtime expectation
+        if class_names is not None and list(ckpt_classes) != list(class_names):
+            raise ValueError(
+                f"Checkpoint class names mismatch: checkpoint has {ckpt_classes}, expected {class_names}."
+            )
+        if label_map is not None and ckpt_label_map != label_map:
+            raise ValueError(
+                f"Checkpoint label_map mismatch: checkpoint has {ckpt_label_map}, expected {label_map}."
+            )
+
+        # 3. Model architecture semantics verification
+        validate_model_architecture(saved_cfg, model, checkpoint_path=resume_p)
+
+        # 4. Architecture and tensor shape verification (including unexpected extra keys)
+        model_sd = model.state_dict()
+        ckpt_sd = ckpt_payload["model_state_dict"]
+
+        if set(ckpt_sd.keys()) != set(model_sd.keys()):
+            unexpected_keys = set(ckpt_sd.keys()) - set(model_sd.keys())
+            missing_keys = set(model_sd.keys()) - set(ckpt_sd.keys())
+            raise ValueError(
+                f"Checkpoint architecture mismatch: unexpected keys {sorted(unexpected_keys)}, "
+                f"missing keys {sorted(missing_keys)}. Retrain required."
+            )
+
+        for param_name, param_tensor in model_sd.items():
+            if ckpt_sd[param_name].shape != param_tensor.shape:
                 raise ValueError(
-                    f"Checkpoint preprocess_identity '{saved_identity}' does not match "
-                    f"current dataset preprocess_identity '{preprocess_identity}'. "
-                    "Cannot resume training on mismatched features."
+                    f"Checkpoint parameter shape mismatch for '{param_name}': expected {param_tensor.shape}, "
+                    f"got {ckpt_sd[param_name].shape}. Retrain required."
                 )
-        saved_epoch = int(ckpt_info.get("epoch", 0))
+
+        # 5. Pre-parse ALL training state scalars BEFORE mutating any weights or optimizer
+        if "epoch" not in ckpt_payload:
+            raise ValueError(f"Checkpoint at {resume_p} is missing required 'epoch'.")
+        try:
+            saved_epoch = int(ckpt_payload["epoch"])
+        except Exception as e:
+            raise ValueError(f"Invalid 'epoch' in checkpoint at {resume_p}: {ckpt_payload.get('epoch')}") from e
+
+        try:
+            parsed_val_loss = float(ckpt_payload.get("best_val_loss", float("inf")))
+            parsed_val_acc = float(ckpt_payload.get("best_val_acc", 0.0))
+            parsed_patience = int(ckpt_payload.get("patience_counter", 0))
+            parsed_es_best = float(ckpt_payload.get("early_stopping_best", parsed_val_loss))
+        except Exception as e:
+            raise ValueError(f"Invalid metric/counter scalar in checkpoint at {resume_p}: {e}") from e
+
+        # 6. Atomic state application: commit only if all operations succeed without error
+        orig_model_state = copy.deepcopy(model.state_dict())
+        orig_opt_state = copy.deepcopy(optimizer.state_dict()) if optimizer is not None else None
+        orig_sched_state = copy.deepcopy(scheduler.state_dict()) if scheduler is not None else None
+        orig_scaler_state = copy.deepcopy(scaler.state_dict()) if scaler is not None else None
+        try:
+            model.load_state_dict(ckpt_sd)
+            if optimizer is not None and "optimizer_state_dict" in ckpt_payload and ckpt_payload["optimizer_state_dict"] is not None:
+                optimizer.load_state_dict(ckpt_payload["optimizer_state_dict"])
+            if scheduler is not None and ckpt_payload.get("scheduler_state_dict") is not None:
+                scheduler.load_state_dict(ckpt_payload["scheduler_state_dict"])
+            if scaler is not None and ckpt_payload.get("scaler_state_dict") is not None:
+                scaler.load_state_dict(ckpt_payload["scaler_state_dict"])
+        except Exception:
+            # Atomic rollback on any failure to guarantee zero mutation
+            model.load_state_dict(orig_model_state)
+            if optimizer is not None and orig_opt_state is not None:
+                optimizer.load_state_dict(orig_opt_state)
+            if scheduler is not None and orig_sched_state is not None:
+                scheduler.load_state_dict(orig_sched_state)
+            if scaler is not None and orig_scaler_state is not None:
+                scaler.load_state_dict(orig_scaler_state)
+            raise
+
         start_epoch = saved_epoch + 1
-        best_val_loss = float(ckpt_info.get("best_val_loss", float("inf")))
-        best_val_acc = float(ckpt_info.get("best_val_acc", 0.0))
-        patience_counter = int(ckpt_info.get("patience_counter", 0))
-        early_stopping_best = float(ckpt_info.get("early_stopping_best", best_val_loss))
+        best_val_loss = parsed_val_loss
+        best_val_acc = parsed_val_acc
+        patience_counter = parsed_patience
+        early_stopping_best = parsed_es_best
         best_weights = copy.deepcopy(model.state_dict())
-        saved_hist = ckpt_info.get("history")
+        saved_hist = ckpt_payload.get("history")
         if isinstance(saved_hist, dict):
             for k in history:
                 if k in saved_hist and isinstance(saved_hist[k], list):
                     history[k] = list(saved_hist[k])
         if verbose:
-            print(f"Resumed from checkpoint: {resume_checkpoint_path} (epoch {saved_epoch}, best_val_loss={best_val_loss:.4f})")
+            print(f"Resumed from checkpoint: {resume_p} (epoch {saved_epoch}, best_val_loss={best_val_loss:.4f})")
 
     # Khởi tạo CSV Streaming cho metrics nếu có đường dẫn
     if metrics_csv_path is None and checkpoint_path is not None:
@@ -401,6 +503,9 @@ def train_gru(
                         resolved_config=resolved_config,
                         schema_version=PREPROCESS_SCHEMA_VERSION,
                         preprocess_identity=preprocess_identity,
+                        class_names=class_names,
+                        label_map=label_map,
+                        seed=seed,
                     )
 
                 if verbose and (ep % 5 == 0 or ep == 1 or is_best or patience_counter >= patience):

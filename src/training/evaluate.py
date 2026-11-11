@@ -35,8 +35,10 @@ def evaluate_test_set(
     plots_dir: Optional[str | Path] = None,
     report_json_path: Optional[str | Path] = None,
     git_commit_hash: Optional[str] = None,
+    preprocess_identity: Optional[str] = None,
+    split_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Đánh giá toàn diện trên tập test với zero hardcoding."""
+    """Đánh giá toàn diện trên tập test với zero hardcoding và đầy đủ provenance audit fields."""
     criterion = nn.CrossEntropyLoss()
     val_loss, top1, macro_f1, y_pred, y_probs, y_true = evaluate_epoch(
         model, test_loader, criterion, device, num_classes=model.num_classes
@@ -45,15 +47,18 @@ def evaluate_test_set(
     top3 = compute_top_k_accuracy(y_true, y_probs, k=3)
     cm = compute_confusion_matrix(y_true, y_pred, num_classes=model.num_classes)
 
-    # Đọc metadata test set để phân tích signer / participant
+    # Đọc metadata tập dữ liệu để phân tích signer / participant (ưu tiên samples đã nạp trong dataset)
     test_rows: List[dict] = []
-    if Path(test_csv).is_file():
+    if hasattr(test_loader, "dataset") and hasattr(test_loader.dataset, "samples") and test_loader.dataset.samples:
+        test_rows = test_loader.dataset.samples
+    elif Path(test_csv).is_file():
         with open(test_csv, mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for r in reader:
                 test_rows.append(r)
 
     per_participant = calculate_per_signer_accuracy(test_rows, y_pred) if test_rows else {}
+    sample_membership = [r.get("sequence_id", f"sample_{idx}") for idx, r in enumerate(test_rows)]
 
     # Vẽ và lưu Confusion Matrix
     if plots_dir:
@@ -62,13 +67,21 @@ def evaluate_test_set(
         cm_path = pdir / "confusion_matrix.png"
         plot_confusion_matrix(cm, class_names, cm_path, normalize=True)
 
+    derived_prep_id = preprocess_identity or getattr(getattr(test_loader, "dataset", None), "preprocess_identity", "unknown")
+    derived_split_id = split_identity or Path(test_csv).stem
+
     report: Dict[str, Any] = {
         "num_test_samples": len(y_true),
         "num_classes": len(class_names),
+        "class_names": class_names,
         "top1_accuracy": round(float(top1), 4),
         "top3_accuracy": round(float(top3), 4),
         "macro_f1": round(float(macro_f1), 4),
         "loss": round(float(val_loss), 4),
+        "confusion_matrix": cm.tolist(),
+        "sample_membership": sample_membership,
+        "preprocess_identity": derived_prep_id,
+        "split_identity": derived_split_id,
         "per_participant_accuracy": per_participant,
         "git_commit_hash": git_commit_hash or "unknown",
     }

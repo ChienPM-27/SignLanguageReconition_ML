@@ -82,6 +82,10 @@ preprocess:
 
 features:
   set: "hands_pose"               # Feature landmark set: 'hands' or 'hands_pose'
+  wrist_reference: "image"        # Wrist coordinate reference: 'image' (default) or 'torso_xy'
+  palm_scale: "frame"             # Palm size normalization: 'frame' (default) or 'clip_median'
+  fingertip_displacement: false   # Whether to append 30 fingertip local displacement features
+  bend_cosines: false             # Whether to append 20 finger articulation cosine features
 
 split:
   method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'
@@ -91,6 +95,7 @@ split:
   n_folds: 5                      # Number of folds if group_kfold
   seed: 42                        # Seed for participant splitting
   min_per_gloss_per_split: 1      # Minimum sequence count per gloss in each split
+  manifest_path: null             # Snapshot path for frozen splits (null to generate fresh)
 
 augmentation:
   flip:
@@ -157,3 +162,5 @@ run:
   name: "gru_baseline"
   output_dir: "outputs/runs"
 
+evaluation:
+  evaluate_test: false            # Default training does not access test set

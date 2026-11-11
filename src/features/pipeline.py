@@ -5,6 +5,7 @@ Enforces:
 - Consistent dominant hand selection
 - Quality gating on minimum valid frames
 - Synchronized idle trimming across hands and pose
+- Pre-imputation estimation of clip median palm scale and shoulder width
 - Bounded gap imputation
 - Temporal resampling on a shared uniform grid
 - Exact mathematical feature extraction with gated derivatives
@@ -16,12 +17,16 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from src.features.normalization import (
+    compute_clip_palm_scales,
+    compute_clip_shoulder_width,
     compute_feature_vector,
+    compute_resampled_transitions,
     interpolate_bounded_gaps,
     resample_temporal,
 )
 from src.features.schema import (
     FEATURE_SET_HANDS_POSE,
+    FeatureLayout,
     get_feature_dim,
 )
 
@@ -57,6 +62,10 @@ def prepare_landmark_sequence(
     trim_no_hand: bool = True,
     dominant_hand: str = "auto",
     feature_set: str = FEATURE_SET_HANDS_POSE,
+    wrist_reference: str = "image",
+    palm_scale: str = "frame",
+    fingertip_displacement: bool = False,
+    bend_cosines: bool = False,
     normalization_epsilon: float = 0.0001,
     raw_coords: Optional[np.ndarray] = None,
     hand_masks: Optional[np.ndarray] = None,
@@ -95,8 +104,17 @@ def prepare_landmark_sequence(
         dominant_hand = str(getattr(prep, "dominant_hand", dominant_hand))
         normalization_epsilon = float(getattr(prep, "normalization_epsilon", normalization_epsilon))
         feature_set = str(getattr(feat, "set", feature_set))
+        wrist_reference = str(getattr(feat, "wrist_reference", wrist_reference))
+        palm_scale = str(getattr(feat, "palm_scale", palm_scale))
+        fingertip_displacement = bool(getattr(feat, "fingertip_displacement", fingertip_displacement))
+        bend_cosines = bool(getattr(feat, "bend_cosines", bend_cosines))
 
-    target_dim = get_feature_dim(feature_set)
+    target_dim = get_feature_dim(
+        feature_set=feature_set,
+        wrist_reference=wrist_reference,
+        fingertip_displacement=fingertip_displacement,
+        bend_cosines=bend_cosines,
+    )
 
     if lh_coords is None or rh_coords is None or len(lh_coords) == 0 or len(rh_coords) != len(lh_coords):
         return PreprocessResult(
@@ -151,8 +169,6 @@ def prepare_landmark_sequence(
             diff_R = rh_clean[1:, 0, :] - rh_clean[:-1, 0, :]
             E_R = float(np.sum(np.linalg.norm(diff_R[valid_adj_R], axis=-1)))
 
-    # Tie breaking: right is dominant if more observations, or equal observations with greater motion
-    # Exact tie defaults to Left (anatomical)
     right_is_dominant = (n_R > n_L) or (n_R == n_L and E_R > E_L)
     use_dominant = dominant_hand not in (False, "false", "disabled", "none")
 
@@ -168,7 +184,6 @@ def prepare_landmark_sequence(
             dom_str = "left"
             slot_to_anatomical = ["left", "right"]
     else:
-        # Anatomical ordering: Slot 0 = LH, Slot 1 = RH
         hands_coords = np.stack([lh_clean, rh_clean], axis=1)
         hands_obs = np.stack([o_lh, o_rh], axis=1)
         dom_str = "anatomical"
@@ -204,6 +219,11 @@ def prepare_landmark_sequence(
     hands_trimmed = hands_coords[start_t:end_t]
     hands_obs_trimmed = hands_obs[start_t:end_t]
 
+    # Pre-imputation estimation: clip median palm scales
+    clip_palm_scales = compute_clip_palm_scales(
+        hands_trimmed, hands_obs_trimmed, normalization_epsilon
+    )
+
     # 5. Pose processing on same trimmed window
     if feature_set == FEATURE_SET_HANDS_POSE and pose_coords is not None and len(pose_coords) > 0:
         trimmed_pose = pose_coords[start_t:end_t]
@@ -226,9 +246,47 @@ def prepare_landmark_sequence(
 
         o_pose = trimmed_p_mask & finite_pose & (shoulder_dist > normalization_epsilon)
         pose_clean = np.where(o_pose[:, np.newaxis, np.newaxis], pose_selected, 0.0)
+
+        # Pre-imputation estimation: clip shoulder width ell on validated observations o_pose
+        clip_shoulder_width = compute_clip_shoulder_width(
+            pose_clean, o_pose, normalization_epsilon
+        )
     else:
         pose_clean = np.zeros((len(hands_trimmed), 4, 3), dtype=np.float32)
         o_pose = np.zeros(len(hands_trimmed), dtype=bool)
+        clip_shoulder_width = 0.0
+
+    # Policy for torso_xy wrist reference: strictly requires valid torso geometry
+    if wrist_reference == "torso_xy":
+        if clip_shoulder_width <= normalization_epsilon or np.sum(o_pose) == 0:
+            layout = FeatureLayout.build(
+                feature_set=feature_set,
+                wrist_reference=wrist_reference,
+                palm_scale=palm_scale,
+                fingertip_displacement=fingertip_displacement,
+                bend_cosines=bend_cosines,
+            )
+            return PreprocessResult(
+                features=np.zeros((sequence_length, layout.total_dim), dtype=np.float32),
+                hand_masks=np.zeros((sequence_length, 2), dtype=bool),
+                pose_mask=np.zeros((sequence_length, 1), dtype=bool),
+                n_valid_hand_frames=n_valid_hand_frames,
+                hand_coverage=hand_coverage,
+                dominant_hand=dom_str,
+                trim_indices=(start_t, end_t),
+                is_usable=False,
+                rejection_reason="Missing or degenerate torso pose geometry required for wrist_reference='torso_xy'",
+                provenance={
+                    "n_raw_frames": T_raw,
+                    "n_L": n_L,
+                    "n_R": n_R,
+                    "E_L": round(E_L, 4),
+                    "E_R": round(E_R, 4),
+                    "slot_to_anatomical": slot_to_anatomical,
+                    "clip_palm_scales": clip_palm_scales,
+                    "clip_shoulder_width": clip_shoulder_width,
+                },
+            )
 
     # 6. Bounded interpolation
     hands_filled, hands_support = interpolate_bounded_gaps(
@@ -252,15 +310,25 @@ def prepare_landmark_sequence(
         masks=hands_support,
         target_len=sequence_length,
     )
+    hand_transitions = compute_resampled_transitions(
+        source_masks=hands_support,
+        target_len=sequence_length,
+    )
+
     if feature_set == FEATURE_SET_HANDS_POSE and pose_filled is not None and pose_support is not None:
         resampled_pose, resampled_pose_masks = resample_temporal(
             coords=pose_filled,
             masks=pose_support,
             target_len=sequence_length,
         )
+        pose_transitions = compute_resampled_transitions(
+            source_masks=pose_support,
+            target_len=sequence_length,
+        )
     else:
         resampled_pose = None
         resampled_pose_masks = None
+        pose_transitions = None
 
     # 8. Feature extraction with canonical equations
     features = compute_feature_vector(
@@ -269,7 +337,15 @@ def prepare_landmark_sequence(
         pose_coords=resampled_pose,
         pose_masks=resampled_pose_masks,
         feature_set=feature_set,
+        wrist_reference=wrist_reference,
+        palm_scale=palm_scale,
+        fingertip_displacement=fingertip_displacement,
+        bend_cosines=bend_cosines,
+        clip_palm_scales=clip_palm_scales,
+        clip_shoulder_width=clip_shoulder_width,
         normalization_epsilon=normalization_epsilon,
+        hand_transitions=hand_transitions,
+        pose_transitions=pose_transitions,
     )
 
     out_pose_mask = (
@@ -280,6 +356,22 @@ def prepare_landmark_sequence(
     if out_pose_mask.ndim == 1:
         out_pose_mask = out_pose_mask[:, np.newaxis]
 
+    # Post-resample Quality Gate (B-04): ensure sequence retains required target support
+    target_hand_support = int(np.sum(resampled_hand_masks))
+    is_usable = True
+    rejection_reason = ""
+    if target_hand_support == 0:
+        is_usable = False
+        rejection_reason = "zero_target_hand_support"
+    elif feature_set == FEATURE_SET_HANDS_POSE and wrist_reference == "torso_xy":
+        layout = FeatureLayout.build(feature_set, wrist_reference, palm_scale,
+                                     fingertip_displacement, bend_cosines)
+        if layout.slice_geometry_support is not None:
+            geom_support = features[:, layout.slice_geometry_support]
+            if np.sum(geom_support) == 0:
+                is_usable = False
+                rejection_reason = "zero_target_geometry_support"
+
     return PreprocessResult(
         features=features,
         hand_masks=resampled_hand_masks,
@@ -288,8 +380,8 @@ def prepare_landmark_sequence(
         hand_coverage=hand_coverage,
         dominant_hand=dom_str,
         trim_indices=(start_t, end_t),
-        is_usable=True,
-        rejection_reason="",
+        is_usable=is_usable,
+        rejection_reason=rejection_reason,
         provenance={
             "n_raw_frames": T_raw,
             "n_L": n_L,
@@ -297,5 +389,16 @@ def prepare_landmark_sequence(
             "E_L": round(E_L, 4),
             "E_R": round(E_R, 4),
             "slot_to_anatomical": slot_to_anatomical,
+            "clip_palm_scales": clip_palm_scales,
+            "clip_shoulder_width": round(clip_shoulder_width, 4) if clip_shoulder_width is not None else 0.0,
+            "hand_transitions": hand_transitions,
+            "pose_transitions": pose_transitions if pose_transitions is not None else np.zeros((sequence_length, 1), dtype=bool),
+            "observed_hands": resample_temporal(hands_trimmed, hands_obs_trimmed, sequence_length)[1],
+            "usable_hands": resampled_hand_masks,
+            "observed_pose": resample_temporal(pose_clean, o_pose[:, None], sequence_length)[1],
+            "usable_pose": out_pose_mask,
+            "valid_timesteps": np.ones((sequence_length, 1), dtype=bool),
+            "target_hand_coverage": float(resampled_hand_masks.any(axis=1).mean()),
+            "target_pose_coverage": float(out_pose_mask.mean()),
         },
     )

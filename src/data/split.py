@@ -12,7 +12,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -88,7 +88,167 @@ def create_signer_splits(
     split_method = cfg.split.method
     split_files: Dict[str, Path] = {}
 
-    if split_method == "participant_holdout":
+    if cfg.split.manifest_path:
+        manifest_p = Path(cfg.split.manifest_path)
+        if not manifest_p.is_file():
+            candidate = paths.repo_root / cfg.split.manifest_path
+            if candidate.is_file():
+                manifest_p = candidate
+            else:
+                candidate2 = paths.persistent_root / cfg.split.manifest_path
+                if candidate2.is_file():
+                    manifest_p = candidate2
+                else:
+                    raise FileNotFoundError(f"Frozen split manifest not found at: {cfg.split.manifest_path}")
+
+        logger.info(f"Rebinding frozen split from manifest: {manifest_p}")
+        with open(manifest_p, mode="r", encoding="utf-8") as f:
+            manifest_data = json.load(f)
+
+        schema_ver = manifest_data.get("schema_version")
+        if schema_ver != 1:
+            raise ValueError(
+                f"Unsupported split manifest schema_version in {manifest_p}: "
+                f"expected 1, got {schema_ver}."
+            )
+
+        splits_dict = manifest_data.get("splits", {})
+        used_seed = int(manifest_data.get("seed", cfg.split.seed))
+        frozen_vocab = manifest_data.get("vocabulary")
+        frozen_label_map = manifest_data.get("label_map")
+        effective_vocab = list(frozen_vocab) if frozen_vocab else unique_glosses
+
+        # Validate label mapping against frozen manifest
+        if frozen_label_map is not None and isinstance(frozen_label_map, dict):
+            for r in records:
+                g = r.get("gloss")
+                if g in frozen_label_map and r.get("label") != frozen_label_map[g]:
+                    raise ValueError(
+                        f"Label mismatch in frozen split rebind for gloss '{g}': "
+                        f"cache has label {r.get('label')}, but manifest specifies {frozen_label_map[g]}."
+                    )
+            label_map = frozen_label_map
+        else:
+            label_map = {r["gloss"]: r["label"] for r in records}
+
+        records_by_seq = {r["sequence_id"]: r for r in records}
+
+        # Validate per-sequence provenance (signer, gloss, label)
+        seq_provenance = manifest_data.get("sequences")
+        if seq_provenance and isinstance(seq_provenance, dict):
+            for sid, expected_meta in seq_provenance.items():
+                if sid in records_by_seq:
+                    rec = records_by_seq[sid]
+                    if "participant_id" in expected_meta and rec.get("participant_id") != expected_meta["participant_id"]:
+                        raise ValueError(
+                            f"Signer provenance violation for sequence '{sid}': "
+                            f"expected '{expected_meta['participant_id']}', got '{rec.get('participant_id')}'."
+                        )
+                    if "gloss" in expected_meta and rec.get("gloss") != expected_meta["gloss"]:
+                        raise ValueError(
+                            f"Gloss provenance violation for sequence '{sid}': "
+                            f"expected '{expected_meta['gloss']}', got '{rec.get('gloss')}'."
+                        )
+        else:
+            # Fallback for manifests where sequence_id encodes {split}_{gloss}_{p}
+            for sid, rec in records_by_seq.items():
+                parts = sid.split("_")
+                if len(parts) >= 3 and parts[0] in splits_dict:
+                    s_split = parts[0]
+                    if parts[1] in effective_vocab:
+                        exp_gloss = parts[1]
+                        if rec.get("gloss") != exp_gloss:
+                            raise ValueError(
+                                f"Gloss provenance violation for sequence '{sid}': "
+                                f"expected gloss '{exp_gloss}', got '{rec.get('gloss')}'."
+                            )
+                        exp_signer = f"{s_split}_p{parts[2]}"
+                        if exp_signer in splits_dict[s_split].get("participant_ids", []):
+                            if rec.get("participant_id") != exp_signer:
+                                raise ValueError(
+                                    f"Signer provenance violation for sequence '{sid}': "
+                                    f"expected participant '{exp_signer}', got '{rec.get('participant_id')}'."
+                                )
+
+        # Track missing sequences per split for explicit exclusion reporting
+        missing_by_split: Dict[str, List[str]] = {}
+        for sname in ("train", "val", "test"):
+            expected_sids = splits_dict.get(sname, {}).get("sequence_ids", [])
+            missing = [sid for sid in expected_sids if sid not in records_by_seq]
+            if missing:
+                missing_by_split[sname] = missing
+
+        train_recs = [records_by_seq[sid] for sid in splits_dict.get("train", {}).get("sequence_ids", []) if sid in records_by_seq]
+        val_recs = [records_by_seq[sid] for sid in splits_dict.get("val", {}).get("sequence_ids", []) if sid in records_by_seq]
+        test_recs = [records_by_seq[sid] for sid in splits_dict.get("test", {}).get("sequence_ids", []) if sid in records_by_seq]
+
+        # Verify participant provenance and class coverage in rebind
+        min_per_gloss = cfg.split.min_per_gloss_per_split
+        for split_name, rec_list in [("train", train_recs), ("val", val_recs), ("test", test_recs)]:
+            # Check participant IDs against frozen manifest
+            expected_participants = set(splits_dict.get(split_name, {}).get("participant_ids", []))
+            if expected_participants:
+                actual_participants = {r["participant_id"] for r in rec_list}
+                if not actual_participants.issubset(expected_participants):
+                    foreign = actual_participants - expected_participants
+                    raise ValueError(
+                        f"Signer provenance violation in frozen split rebind for '{split_name}': "
+                        f"found unexpected participant IDs {sorted(foreign)}. "
+                        f"Frozen manifest restricts participants to {sorted(expected_participants)}."
+                    )
+
+            counts: Dict[str, int] = {}
+            for r in rec_list:
+                counts[r["gloss"]] = counts.get(r["gloss"], 0) + 1
+            for g in effective_vocab:
+                cnt = counts.get(g, 0)
+                if cnt < min_per_gloss:
+                    raise ValueError(
+                        f"Class coverage violation in frozen split rebind: gloss '{g}' has {cnt} samples "
+                        f"in '{split_name}' (minimum required: {min_per_gloss}). "
+                        "Reassigning participants or altering seeds to compensate is strictly prohibited."
+                    )
+
+        is_clean, leaks = verify_no_participant_leakage(train_recs, val_recs, test_recs)
+        if not is_clean:
+            raise RuntimeError(f"Participant leakage detected in frozen manifest rebind: {leaks}")
+
+        # Save split CSVs
+        for split_name, rec_list in [("train", train_recs), ("val", val_recs), ("test", test_recs)]:
+            out_csv = splits_dir / f"{split_name}.csv"
+            with open(out_csv, mode="w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["sequence_id", "participant_id", "gloss", "label", "path"])
+                for r in rec_list:
+                    writer.writerow([r["sequence_id"], r["participant_id"], r["gloss"], r["label"], r["path"]])
+            split_files[split_name] = out_csv
+
+        # Save classes.csv and label_map.json
+        with open(splits_dir / "label_map.json", mode="w", encoding="utf-8") as f:
+            json.dump(label_map, f, indent=2)
+
+        classes_csv = splits_dir / "classes.csv"
+        with open(classes_csv, mode="w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["gloss", "label"])
+            for g in sorted(label_map.keys()):
+                writer.writerow([g, label_map[g]])
+
+        report_md_path = report_dir / "split_report.md"
+        _generate_split_report(
+            report_path=report_md_path,
+            train_recs=train_recs,
+            val_recs=val_recs,
+            test_recs=test_recs,
+            glosses=effective_vocab,
+            cfg=cfg,
+            used_seed=used_seed,
+            missing_sequences=missing_by_split,
+        )
+        split_files["manifest"] = manifest_p
+        return split_files, report_md_path
+
+    elif split_method == "participant_holdout":
         train_recs, val_recs, test_recs, used_seed = _find_valid_holdout_partition(
             records=records,
             participants=unique_participants,
@@ -123,6 +283,44 @@ def create_signer_splits(
             writer.writerow(["gloss", "label"])
             for g in sorted(label_map.keys()):
                 writer.writerow([g, label_map[g]])
+
+        # Save canonical split_manifest.json for freezing and downstream reproducibility
+        all_split_recs = [("train", train_recs), ("val", val_recs), ("test", test_recs)]
+        manifest_payload = {
+            "schema_version": 1,
+            "split_method": "participant_holdout",
+            "seed": used_seed,
+            "vocabulary": unique_glosses,
+            "label_map": label_map,
+            "splits": {
+                "train": {
+                    "participant_ids": sorted({r["participant_id"] for r in train_recs}),
+                    "sequence_ids": [r["sequence_id"] for r in train_recs],
+                },
+                "val": {
+                    "participant_ids": sorted({r["participant_id"] for r in val_recs}),
+                    "sequence_ids": [r["sequence_id"] for r in val_recs],
+                },
+                "test": {
+                    "participant_ids": sorted({r["participant_id"] for r in test_recs}),
+                    "sequence_ids": [r["sequence_id"] for r in test_recs],
+                },
+            },
+            "sequences": {
+                r["sequence_id"]: {
+                    "participant_id": r["participant_id"],
+                    "gloss": r["gloss"],
+                    "label": r["label"],
+                    "split": sname,
+                }
+                for sname, recs in all_split_recs
+                for r in recs
+            },
+        }
+        manifest_json_path = splits_dir / "split_manifest.json"
+        with open(manifest_json_path, mode="w", encoding="utf-8") as f:
+            json.dump(manifest_payload, f, indent=2)
+        split_files["manifest"] = manifest_json_path
 
         # Generate split report
         report_md_path = report_dir / "split_report.md"
@@ -268,6 +466,7 @@ def _generate_split_report(
     glosses: List[str],
     cfg: Config,
     used_seed: int,
+    missing_sequences: Optional[Dict[str, List[str]]] = None,
 ) -> None:
     tr_parts = sorted({r["participant_id"] for r in train_recs})
     va_parts = sorted({r["participant_id"] for r in val_recs})
@@ -312,6 +511,17 @@ def _generate_split_report(
         n_te = c_te.get(g, 0)
         n_tot = n_tr + n_va + n_te
         lines.append(f"| {idx} | **{g}** | {n_tr} | {n_va} | {n_te} | {n_tot} |")
+
+    if missing_sequences and any(missing_sequences.values()):
+        lines.extend([
+            "",
+            "## 4. Frozen Rebind Exclusions & Missing Sequences",
+            "| Split | Missing Sequence ID | Exclusion Reason |",
+            "| :--- | :--- | :--- |",
+        ])
+        for sname, sids in missing_sequences.items():
+            for sid in sids:
+                lines.append(f"| `{sname}` | `{sid}` | Sequence absent from active feature cache (exclusion) |")
 
     lines.append("")
     report_path.write_text("\n".join(lines), encoding="utf-8")

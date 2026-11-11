@@ -128,7 +128,7 @@ def preprocess_single_sequence(
     ):
         try:
             arr = np.load(str(target_npy))
-            expected_dim = get_feature_dim(cfg.features.set)
+            expected_dim = get_feature_dim(cfg)
             if arr.shape == (cfg.preprocess.sequence_length, expected_dim):
                 n_valid, cov = reusable_manifest[sequence_id]
                 return PreprocessItemResult(
@@ -475,7 +475,7 @@ def _generate_preprocess_report(
         f"- **Total Sequences Processed:** {total}",
         f"- **Retained (Kept) Sequences:** {len(kept)} ({len(kept)/total*100:.1f}%)" if total else "- Kept: 0",
         f"- **Excluded Sequences:** {len(excluded)}",
-        f"- **Feature Dimension Inferred:** `{get_feature_dim(cfg.features.set)}`",
+        f"- **Feature Dimension Inferred:** `{get_feature_dim(cfg)}`",
         f"- **Target Temporal Length:** `{cfg.preprocess.sequence_length}`",
         f"- **Mean Hand Coverage (Kept):** `{mean_cov:.3f}`",
         "",

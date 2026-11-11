@@ -10,6 +10,7 @@ import importlib
 import json
 from pathlib import Path
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -20,6 +21,7 @@ run_overfit_check = train_module.run_overfit_check
 run_training_pipeline = train_module.run_training_pipeline
 
 from src.data.dataset import ISRLandmarkDataset
+from src.features.schema import get_feature_dim
 from src.models.gru import ASLGRUClassifier
 from src.training.train import (
     create_scheduler,
@@ -58,6 +60,9 @@ def _setup_synthetic_train_environment(tmp_path: Path, n_samples: int = 12, n_cl
             npy_path = feat_dir / f"{seq_id}.npy"
             # Distinct pattern per class to allow fast overfit / learning
             arr = np.ones((32, feature_dim), dtype=np.float32) * (lbl + 1.0) * 0.5
+            arr[:, 141:143] = 1.0
+            if feature_dim >= 160:
+                arr[:, 159:160] = 1.0
             np.save(str(npy_path), arr)
             rows.append([seq_id, f"signer_{i % 3}", f"sign_{lbl}", lbl, str(npy_path)])
 
@@ -70,6 +75,13 @@ def _setup_synthetic_train_environment(tmp_path: Path, n_samples: int = 12, n_cl
     train_csv = create_split_file("train.csv", n_samples)
     val_csv = create_split_file("val.csv", max(3, n_samples // 3))
     test_csv = create_split_file("test.csv", max(3, n_samples // 3))
+
+    from src.features.schema import compute_preprocess_identity
+    cfg = load_config()
+    cfg.features.set = "hands_pose" if feature_dim >= 160 else "hands"
+    identity, params = compute_preprocess_identity(cfg)
+    with open(feat_dir / "preprocess_meta.json", "w", encoding="utf-8") as f:
+        json.dump({"config_hash": identity, "parameters": params}, f, indent=2)
 
     return splits_dir, train_csv, val_csv, test_csv, class_names
 
@@ -186,7 +198,7 @@ def test_cli_train_pipeline_end_to_end(tmp_path: Path) -> None:
     assert (run_dir / "multi_seed_summary.json").is_file()
     assert (run_dir / "seed_42" / "best_model.pt").is_file()
     assert (run_dir / "seed_42" / "train_metrics.csv").is_file()
-    assert (run_dir / "seed_42" / "test_report.json").is_file()
+    assert (run_dir / "seed_42" / "val_report.json").is_file()
     assert (run_dir / "seed_42" / "confusion_matrix.png").is_file()
     assert (run_dir / "seed_42" / "learning_curves.png").is_file()
 
@@ -276,6 +288,10 @@ def test_save_load_checkpoint_and_resume(tmp_path: Path) -> None:
     model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
     ckpt_path = tmp_path / "stage1_best.pt"
     csv_path = tmp_path / "stage1_metrics.csv"
+    cfg = load_config()
+    cfg.features.set = "hands"
+    cfg.model.hidden_size = 16
+    cfg.model.num_layers = 1
 
     # Train for 2 epochs
     h1 = train_gru(
@@ -287,6 +303,10 @@ def test_save_load_checkpoint_and_resume(tmp_path: Path) -> None:
         checkpoint_path=ckpt_path,
         metrics_csv_path=csv_path,
         verbose=False,
+        resolved_config=cfg.to_dict(),
+        preprocess_identity=train_ds.preprocess_identity,
+        class_names=train_ds.class_names,
+        label_map=train_ds.label_map,
     )
     assert len(h1["train_loss"]) == 2
     assert ckpt_path.is_file()
@@ -306,6 +326,10 @@ def test_save_load_checkpoint_and_resume(tmp_path: Path) -> None:
         patience_counter=0,
         early_stopping_best=0.5,
         history=h1,
+        resolved_config=cfg.to_dict(),
+        preprocess_identity=train_ds.preprocess_identity,
+        class_names=train_ds.class_names,
+        label_map=train_ds.label_map,
     )
     assert saved_p.is_file()
     direct_loaded = load_checkpoint(direct_ckpt_path)
@@ -331,6 +355,10 @@ def test_save_load_checkpoint_and_resume(tmp_path: Path) -> None:
         resume_checkpoint_path=ckpt_path,
         metrics_csv_path=csv_path,
         verbose=False,
+        resolved_config=cfg.to_dict(),
+        preprocess_identity=train_ds.preprocess_identity,
+        class_names=train_ds.class_names,
+        label_map=train_ds.label_map,
     )
     assert len(h2["train_loss"]) == 4
 
@@ -392,3 +420,91 @@ def test_amp_gradscaler_initialization(tmp_path: Path) -> None:
         verbose=False,
     )
     assert len(h["train_loss"]) == 1
+
+
+def test_resume_nonexistent_path_raises_file_not_found(tmp_path: Path) -> None:
+    """Ensure attempting to resume from a missing checkpoint fails loudly with FileNotFoundError."""
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=4, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+
+    nonexistent_ckpt = tmp_path / "does_not_exist.pt"
+    with pytest.raises(FileNotFoundError, match="Silent fresh start is strictly prohibited"):
+        train_gru(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=2,
+            device=device,
+            resume_checkpoint_path=nonexistent_ckpt,
+        )
+
+
+def test_rejected_resume_does_not_mutate_model_weights(tmp_path: Path) -> None:
+    """Ensure any validation failure on resume leaves initial model weights 100% intact."""
+    _, train_csv, val_csv, _, _ = _setup_synthetic_train_environment(tmp_path, n_samples=4, n_classes=2)
+    device = torch.device("cpu")
+    train_ds = ISRLandmarkDataset(split_csv=train_csv, sequence_length=32, feature_dim=143)
+    val_ds = ISRLandmarkDataset(split_csv=val_csv, sequence_length=32, feature_dim=143)
+    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+
+    model = ASLGRUClassifier(input_size=143, hidden_size=16, num_layers=1, num_classes=2, dropout=0.0)
+    # Record deep copy of initial model weights
+    initial_weights = {k: v.clone() for k, v in model.state_dict().items()}
+
+    # Create invalid checkpoint with mismatched schema version
+    bad_ckpt_path = tmp_path / "corrupt_schema_ckpt.pt"
+    dummy_payload = {
+        "model_state_dict": {k: v.clone() * 99.0 for k, v in model.state_dict().items()},
+        "schema_version": 1,  # incompatible schema version
+        "preprocess_identity": train_ds.preprocess_identity,
+        "resolved_config": {"features": {"set": "hands"}},
+    }
+    torch.save(dummy_payload, str(bad_ckpt_path))
+
+    with pytest.raises(ValueError, match="Checkpoint schema version mismatch"):
+        train_gru(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=2,
+            device=device,
+            resume_checkpoint_path=bad_ckpt_path,
+            preprocess_identity=train_ds.preprocess_identity,
+        )
+
+    # Verify model weights were NOT mutated
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, initial_weights[k]), f"Weight '{k}' was mutated after failed resume validation!"
+
+
+def test_training_pipeline_does_not_access_test_split_by_default(tmp_path: Path) -> None:
+    """Verify default training (evaluate_test=false) does not read or require valid test features."""
+    cfg = load_config()
+    dim = get_feature_dim(cfg.features.set)
+    splits_dir, _, _, test_csv, _ = _setup_synthetic_train_environment(tmp_path, n_samples=6, n_classes=2, feature_dim=dim)
+
+    # Point test_csv to completely non-existent / deleted feature files
+    with open(test_csv, mode="w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["sequence_id", "participant_id", "gloss", "label", "path"])
+        writer.writerow(["fake_seq_999", "fake_signer", "sign_0", 0, str(tmp_path / "missing_file.npy")])
+
+    overrides = [
+        f"env.local_root={tmp_path}",
+        "training.epochs=1",
+        "training.batch_size=2",
+        "model.hidden_size=16",
+        "model.num_layers=1",
+        "training.seeds=[42]",
+        "evaluation.evaluate_test=false",
+    ]
+
+    # Training must succeed without touching test features
+    ret = run_training_pipeline(overrides=overrides)
+    assert ret == 0

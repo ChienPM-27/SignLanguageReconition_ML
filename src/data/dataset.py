@@ -14,7 +14,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -22,7 +22,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from src.data.augmentation import apply_augmentation
 from src.data.device_loader import DeviceDataLoader
-from src.features.schema import PREPROCESS_SCHEMA_VERSION
+from src.features.schema import (
+    PREPROCESS_SCHEMA_VERSION,
+    compute_preprocess_identity,
+    infer_feature_layout_from_dim,
+)
 from src.utils.logging import get_logger
 
 logger = get_logger("islr.dataset")
@@ -33,12 +37,12 @@ MAX_PRELOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB giới hạn an toàn
 def load_and_validate_feature_file(
     npy_path: str | Path,
     sequence_length: int,
-    feature_dim: int,
+    feature_dim: Optional[int] = None,
     sequence_id: str = "",
 ) -> np.ndarray:
-    """Helper đọc file .npy, kiểm tra tính toàn vẹn (tồn tại, ndim==2, feature_dim) và căn chỉnh thời gian.
+    """Helper đọc file .npy, kiểm tra tính toàn vẹn (tồn tại, ndim==2, feature_dim, finite, binary masks) và căn chỉnh thời gian.
 
-    Đảm bảo nguyên tắc: không bao giờ trả tensor 0 âm thầm.
+    Đảm bảo nguyên tắc: không bao giờ silent pad/truncate hoặc trả tensor 0 âm thầm.
     """
     path = Path(npy_path)
     if not path.is_file():
@@ -49,22 +53,57 @@ def load_and_validate_feature_file(
 
     features = np.load(str(path)).astype(np.float32)
 
-    # Kiểm tra shape
+    # 1. Kiểm tra shape 2D
     if features.ndim != 2:
-        raise ValueError(f"Feature array must be 2D (T, D), got shape {features.shape} at {path}")
+        raise ValueError(f"Feature array must be 2D (T, D), got shape {features.shape} at {path} for sequence '{sequence_id}'")
 
     t_cur, d_cur = features.shape
-    if d_cur != feature_dim:
+
+    # 2. Kiểm tra non-finite (NaN / Inf)
+    if not np.isfinite(features).all():
+        raise ValueError(f"Non-finite values (NaN or Inf) detected in feature file {path} for sequence '{sequence_id}'.")
+
+    # 3. Kiểm tra feature_dim
+    if feature_dim is not None and d_cur != feature_dim:
         raise ValueError(
-            f"Feature dimension mismatch: expected {feature_dim}, got {d_cur} at {path}"
+            f"Feature dimension mismatch in {path} for sequence '{sequence_id}': expected {feature_dim}, got {d_cur}"
+        )
+    ALLOWED_FEATURE_DIMS = frozenset({143, 160, 162, 163, 173, 180, 182, 190, 192, 193, 210, 212})
+    if d_cur not in ALLOWED_FEATURE_DIMS:
+        raise ValueError(
+            f"Unsupported feature dimension {d_cur} in {path} for sequence '{sequence_id}'. "
+            f"Allowed dimensions: {sorted(ALLOWED_FEATURE_DIMS)}."
         )
 
-    # Đảm bảo đúng chiều thời gian sequence_length
+    # 4. Kiểm tra đúng chiều thời gian sequence_length (Strict check: không silent pad/truncate)
     if t_cur != sequence_length:
-        padded = np.zeros((sequence_length, feature_dim), dtype=np.float32)
-        valid_t = min(t_cur, sequence_length)
-        padded[:valid_t, :] = features[:valid_t, :]
-        features = padded
+        raise ValueError(
+            f"Feature sequence length mismatch in {path} for sequence '{sequence_id}': "
+            f"expected {sequence_length}, got {t_cur}. Silent padding or truncation is strictly prohibited."
+        )
+
+    # 5. Kiểm tra tính nhị phân của các mask hỗ trợ (support masks must be strictly binary 0.0 or 1.0)
+    layout = infer_feature_layout_from_dim(d_cur)
+    hand_support = features[:, layout.slice_hand_masks]
+    if not np.all((hand_support == 0.0) | (hand_support == 1.0)):
+        raise ValueError(
+            f"Non-binary hand support mask values detected in {path} for sequence '{sequence_id}'. "
+            "Support masks must strictly contain 0.0 or 1.0."
+        )
+    if layout.has_pose and layout.slice_pose_mask is not None:
+        pose_support = features[:, layout.slice_pose_mask]
+        if not np.all((pose_support == 0.0) | (pose_support == 1.0)):
+            raise ValueError(
+                f"Non-binary pose support mask values detected in {path} for sequence '{sequence_id}'. "
+                "Pose masks must strictly contain 0.0 or 1.0."
+            )
+    if layout.slice_geometry_support is not None:
+        geom_support = features[:, layout.slice_geometry_support]
+        if not np.all((geom_support == 0.0) | (geom_support == 1.0)):
+            raise ValueError(
+                f"Non-binary geometry support mask values detected in {path} for sequence '{sequence_id}'. "
+                "Geometry support masks must strictly contain 0.0 or 1.0."
+            )
 
     return features
 
@@ -84,6 +123,8 @@ class ISRLandmarkDataset(Dataset):
         strict: bool = True,
         preload: str = "none",
         device: Optional[Union[torch.device, str]] = None,
+        expected_preprocess_identity: Optional[str] = None,
+        normalization_epsilon: float = 1e-4,
     ):
         self.split_csv = Path(split_csv)
         self.features_dir = Path(features_dir) if features_dir is not None else None
@@ -94,6 +135,8 @@ class ISRLandmarkDataset(Dataset):
         self.feature_dim = feature_dim
         self.strict = strict
         self.preload = preload
+        self.expected_preprocess_identity = expected_preprocess_identity
+        self.normalization_epsilon = normalization_epsilon
 
         if self.preload not in {"none", "ram", "device"}:
             raise ValueError(f"Invalid preload mode '{self.preload}'. Allowed: ['none', 'ram', 'device'].")
@@ -107,33 +150,6 @@ class ISRLandmarkDataset(Dataset):
 
         if not self.split_csv.is_file():
             raise FileNotFoundError(f"Split CSV not found: {self.split_csv}")
-
-        # Validate preprocess_meta.json if present
-        meta_candidates = []
-        if self.features_dir is not None:
-            meta_candidates.append(self.features_dir / "preprocess_meta.json")
-        meta_candidates.append(self.split_csv.parent / "preprocess_meta.json")
-
-        self.preprocess_identity: Optional[str] = None
-        for meta_p in meta_candidates:
-            if meta_p.is_file():
-                try:
-                    with open(meta_p, mode="r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                    self.preprocess_identity = meta.get("config_hash") or meta.get("hash")
-                    params = meta.get("parameters", {})
-                    meta_schema = params.get("schema_version")
-                    if meta_schema is not None and meta_schema != PREPROCESS_SCHEMA_VERSION:
-                        raise ValueError(
-                            f"Preprocessing schema version mismatch in {meta_p}: "
-                            f"dataset has version {meta_schema}, but codebase requires version {PREPROCESS_SCHEMA_VERSION}. "
-                            "Features must be regenerated."
-                        )
-                except Exception as e:
-                    if isinstance(e, ValueError):
-                        raise
-                    logger.warning(f"Could not read metadata from {meta_p}: {e}")
-                break
 
         self.samples: List[Dict[str, Any]] = []
         raw_rows: List[Dict[str, str]] = []
@@ -191,6 +207,89 @@ class ISRLandmarkDataset(Dataset):
 
         if len(self.samples) == 0:
             raise ValueError(f"No valid feature files found from {self.split_csv} (total entries: {total_rows}).")
+
+        label_to_gloss: Dict[int, str] = {}
+        for s in self.samples:
+            lbl = s["label"]
+            gls = s["gloss"]
+            if lbl not in label_to_gloss and gls:
+                label_to_gloss[lbl] = gls
+
+        if label_to_gloss:
+            max_lbl = max(label_to_gloss.keys())
+            if set(label_to_gloss.keys()) == set(range(max_lbl + 1)):
+                self.class_names: List[str] = [label_to_gloss[i] for i in range(max_lbl + 1)]
+                self.label_map: Dict[str, int] = {cname: idx for idx, cname in enumerate(self.class_names)}
+            else:
+                self.class_names = [label_to_gloss[k] for k in sorted(label_to_gloss.keys())]
+                self.label_map = {cname: idx for idx, cname in enumerate(self.class_names)}
+        else:
+            self.class_names = []
+            self.label_map = {}
+
+        # Strict validation of preprocess_meta.json across all unique feature directories
+        feature_cache_dirs: Set[Path] = {s["path"].parent.resolve() for s in self.samples}
+        if self.features_dir is not None:
+            feature_cache_dirs.add(self.features_dir.resolve())
+
+        self.preprocess_identity: Optional[str] = None
+        for cdir in sorted(feature_cache_dirs):
+            meta_path = cdir / "preprocess_meta.json"
+            if not meta_path.is_file() and cdir.name == "features":
+                meta_path = cdir.parent / "preprocess_meta.json"
+
+            if not meta_path.is_file():
+                raise FileNotFoundError(
+                    f"Missing canonical 'preprocess_meta.json' in feature cache directory: {cdir}. "
+                    "All feature directories must contain valid preprocessing metadata."
+                )
+
+            try:
+                with open(meta_path, mode="r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception as exc:
+                raise ValueError(f"Corrupted or unreadable preprocess_meta.json at {meta_path}: {exc}") from exc
+
+            if not isinstance(meta, dict):
+                raise ValueError(f"Invalid preprocess_meta.json format at {meta_path}: root must be a JSON object.")
+
+            if "config_hash" not in meta or not meta["config_hash"]:
+                raise ValueError(
+                    f"Missing canonical 'config_hash' in {meta_path}. Legacy 'hash' fallback is strictly prohibited."
+                )
+
+            params = meta.get("parameters")
+            if not isinstance(params, dict):
+                raise ValueError(f"Missing canonical 'parameters' dictionary in {meta_path}.")
+
+            meta_schema = meta.get("schema_version") or params.get("schema_version")
+            if meta_schema != PREPROCESS_SCHEMA_VERSION:
+                raise ValueError(
+                    f"Preprocessing schema version mismatch in {meta_path}: "
+                    f"dataset has version {meta_schema}, but codebase requires version {PREPROCESS_SCHEMA_VERSION}. "
+                    "Features must be regenerated."
+                )
+
+            computed_id, _ = compute_preprocess_identity(params)
+            if computed_id != meta["config_hash"]:
+                raise ValueError(
+                    f"Corrupted metadata in {meta_path}: recomputed identity hash '{computed_id}' "
+                    f"does not match declared config_hash '{meta['config_hash']}'."
+                )
+
+            current_id = str(meta["config_hash"])
+            if self.preprocess_identity is not None and self.preprocess_identity != current_id:
+                raise ValueError(
+                    f"Mixed feature caches detected! Cache directory {cdir} has identity '{current_id}', "
+                    f"conflicting with previously validated identity '{self.preprocess_identity}'."
+                )
+            self.preprocess_identity = current_id
+
+        if expected_preprocess_identity is not None and self.preprocess_identity != expected_preprocess_identity:
+            raise ValueError(
+                f"Dataset preprocess identity mismatch: cache has '{self.preprocess_identity}', "
+                f"but expected '{expected_preprocess_identity}'. Features must be regenerated."
+            )
 
         # Suy luận feature_dim nếu chưa cung cấp
         if self.feature_dim is None:
@@ -271,7 +370,9 @@ class ISRLandmarkDataset(Dataset):
         if self._preloaded_features is not None and self._preloaded_labels is not None:
             if self.augment:
                 feat_np = self._preloaded_features[idx].cpu().numpy().copy()
-                feat_np = apply_augmentation(feat_np, cfg=self.augmentation_config)
+                feat_np = apply_augmentation(
+                    feat_np, cfg=self.augmentation_config, normalization_epsilon=self.normalization_epsilon
+                )
                 x_tensor = torch.from_numpy(feat_np).float()
             else:
                 x_tensor = self._preloaded_features[idx]
@@ -288,7 +389,9 @@ class ISRLandmarkDataset(Dataset):
 
         # Áp dụng Augmentation nếu ở chế độ train và bật augment
         if self.augment:
-            features = apply_augmentation(features, cfg=self.augmentation_config)
+            features = apply_augmentation(
+                features, cfg=self.augmentation_config, normalization_epsilon=self.normalization_epsilon
+            )
 
         x_tensor = torch.from_numpy(features).float()
         y_tensor = torch.tensor(sample["label"], dtype=torch.long)

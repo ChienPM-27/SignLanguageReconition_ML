@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import numpy as np
 import pytest
@@ -32,7 +33,13 @@ from src.data.augmentation_gpu import (
 from src.data.dataset import ISRLandmarkDataset, create_dataloader
 
 
-def _create_synthetic_split_dataset(tmp_path: Path, num_samples: int = 6, num_classes: int = 3, feature_dim: int = 143):
+def _create_synthetic_split_dataset(
+    tmp_path: Path,
+    num_samples: int = 6,
+    num_classes: int = 3,
+    feature_dim: int = 143,
+    create_meta: bool = True,
+):
     split_dir = tmp_path / "splits"
     split_dir.mkdir(parents=True, exist_ok=True)
     split_csv = split_dir / "train.csv"
@@ -46,8 +53,11 @@ def _create_synthetic_split_dataset(tmp_path: Path, num_samples: int = 6, num_cl
         gloss = f"gloss_{i % num_classes}"
         lbl = i % num_classes
         npy_path = feat_dir / f"{seq_id}.npy"
-        # Generate random array of shape (32, feature_dim)
+        # Generate array of shape (32, feature_dim) with strictly binary support masks
         arr = np.random.randn(32, feature_dim).astype(np.float32)
+        arr[:, 141:143] = 1.0
+        if feature_dim >= 160:
+            arr[:, 159:160] = 1.0
         np.save(str(npy_path), arr)
         rows.append([seq_id, f"signer_{i % 2}", gloss, lbl, str(npy_path)])
 
@@ -55,6 +65,15 @@ def _create_synthetic_split_dataset(tmp_path: Path, num_samples: int = 6, num_cl
         writer = csv.writer(f)
         writer.writerow(["sequence_id", "participant_id", "gloss", "label", "path"])
         writer.writerows(rows)
+
+    if create_meta:
+        from src.features.schema import compute_preprocess_identity
+        from src.utils.config import load_config
+        cfg = load_config()
+        cfg.features.set = "hands_pose" if feature_dim >= 160 else "hands"
+        identity, params = compute_preprocess_identity(cfg)
+        with open(feat_dir / "preprocess_meta.json", "w", encoding="utf-8") as f:
+            json.dump({"config_hash": identity, "parameters": params}, f, indent=2)
 
     return split_csv, feat_dir
 
@@ -385,3 +404,136 @@ def test_device_loader_with_batch_augmentation(tmp_path: Path) -> None:
     assert torch.equal(batch_x[:, :, 141:], raw_x[:, :, 141:])
 
 
+def test_dataset_rejects_silent_pad_truncate(tmp_path: Path) -> None:
+    """Ensure silent padding or truncation is strictly prohibited when T != sequence_length."""
+    feat_file = tmp_path / "bad_len.npy"
+    # Create array with 25 timesteps instead of expected 32
+    bad_arr = np.ones((25, 143), dtype=np.float32)
+    bad_arr[:, 141:143] = 1.0
+    np.save(str(feat_file), bad_arr)
+
+    from src.data.dataset import load_and_validate_feature_file
+
+    with pytest.raises(ValueError, match="Silent padding or truncation is strictly prohibited"):
+        load_and_validate_feature_file(feat_file, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_rejects_nonfinite_values(tmp_path: Path) -> None:
+    """Ensure feature loader rejects arrays containing NaN or Inf."""
+    from src.data.dataset import load_and_validate_feature_file
+
+    feat_file = tmp_path / "nan_feat.npy"
+    arr = np.ones((32, 143), dtype=np.float32)
+    arr[5, 10] = np.nan
+    np.save(str(feat_file), arr)
+
+    with pytest.raises(ValueError, match="Non-finite values"):
+        load_and_validate_feature_file(feat_file, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_rejects_nonbinary_support_masks(tmp_path: Path) -> None:
+    """Ensure feature loader rejects arrays with non-binary values in presence masks."""
+    from src.data.dataset import load_and_validate_feature_file
+
+    feat_file = tmp_path / "nonbinary_mask.npy"
+    arr = np.ones((32, 143), dtype=np.float32)
+    arr[:, 141:143] = 0.5  # Invalid non-binary value
+    np.save(str(feat_file), arr)
+
+    with pytest.raises(ValueError, match="Non-binary hand support mask values detected"):
+        load_and_validate_feature_file(feat_file, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_rejects_missing_preprocess_meta(tmp_path: Path) -> None:
+    """Ensure dataset rejects cache missing canonical preprocess_meta.json."""
+    split_csv, feat_dir = _create_synthetic_split_dataset(tmp_path, num_samples=4, num_classes=2, create_meta=False)
+    with pytest.raises(FileNotFoundError, match="Missing canonical 'preprocess_meta.json'"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_rejects_corrupted_or_legacy_meta(tmp_path: Path) -> None:
+    """Ensure dataset rejects metadata with legacy 'hash' fallback or mismatched parameters."""
+    split_csv, feat_dir = _create_synthetic_split_dataset(tmp_path, num_samples=4, num_classes=2, create_meta=False)
+
+    # 1. Test legacy 'hash' key without 'config_hash'
+    legacy_meta = feat_dir / "preprocess_meta.json"
+    with open(legacy_meta, "w", encoding="utf-8") as f:
+        json.dump({"hash": "legacy_abc123", "parameters": {}}, f)
+    with pytest.raises(ValueError, match="Missing canonical 'config_hash'"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143)
+
+    # 2. Test schema version mismatch
+    with open(legacy_meta, "w", encoding="utf-8") as f:
+        json.dump({"config_hash": "abc", "parameters": {"schema_version": 1}}, f)
+    with pytest.raises(ValueError, match="Preprocessing schema version mismatch"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143)
+
+    # 3. Test parameter hash mismatch with declared config_hash
+    from src.features.schema import compute_preprocess_identity
+    from src.utils.config import load_config
+    cfg = load_config()
+    _, params = compute_preprocess_identity(cfg)
+    with open(legacy_meta, "w", encoding="utf-8") as f:
+        json.dump({"config_hash": "tampered_fake_hash", "parameters": params}, f)
+    with pytest.raises(ValueError, match="Corrupted metadata"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_rejects_mixed_cache_directories(tmp_path: Path) -> None:
+    """Ensure dataset fails loudly if samples come from directories with conflicting identities."""
+    dir_a = tmp_path / "cache_a"
+    dir_b = tmp_path / "cache_b"
+    dir_a.mkdir(parents=True, exist_ok=True)
+    dir_b.mkdir(parents=True, exist_ok=True)
+
+    from src.features.schema import compute_preprocess_identity
+    from src.utils.config import load_config
+    cfg_a = load_config()
+    cfg_a.preprocess.max_gap_frames = 3
+    id_a, params_a = compute_preprocess_identity(cfg_a)
+    with open(dir_a / "preprocess_meta.json", "w", encoding="utf-8") as f:
+        json.dump({"config_hash": id_a, "parameters": params_a}, f)
+
+    cfg_b = load_config()
+    cfg_b.preprocess.max_gap_frames = 5
+    id_b, params_b = compute_preprocess_identity(cfg_b)
+    with open(dir_b / "preprocess_meta.json", "w", encoding="utf-8") as f:
+        json.dump({"config_hash": id_b, "parameters": params_b}, f)
+
+    # File in A
+    arr_a = np.ones((32, 143), dtype=np.float32)
+    arr_a[:, 141:143] = 1.0
+    path_a = dir_a / "seq_a.npy"
+    np.save(str(path_a), arr_a)
+
+    # File in B
+    arr_b = np.ones((32, 143), dtype=np.float32)
+    arr_b[:, 141:143] = 1.0
+    path_b = dir_b / "seq_b.npy"
+    np.save(str(path_b), arr_b)
+
+    split_csv = tmp_path / "mixed.csv"
+    with open(split_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["sequence_id", "participant_id", "gloss", "label", "path"])
+        writer.writerow(["seq_a", "signer_1", "sign_0", 0, str(path_a)])
+        writer.writerow(["seq_b", "signer_2", "sign_1", 1, str(path_b)])
+
+    with pytest.raises(ValueError, match="Mixed feature caches detected"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143)
+
+
+def test_dataset_expected_preprocess_identity(tmp_path: Path) -> None:
+    """Ensure expected_preprocess_identity strictly validates cache identity."""
+    split_csv, feat_dir = _create_synthetic_split_dataset(tmp_path, num_samples=4, num_classes=2, create_meta=True)
+
+    with open(feat_dir / "preprocess_meta.json", "r", encoding="utf-8") as f:
+        actual_id = json.load(f)["config_hash"]
+
+    # Matching identity succeeds
+    ds = ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143, expected_preprocess_identity=actual_id)
+    assert ds.preprocess_identity == actual_id
+
+    # Mismatched identity raises
+    with pytest.raises(ValueError, match="Dataset preprocess identity mismatch"):
+        ISRLandmarkDataset(split_csv=split_csv, sequence_length=32, feature_dim=143, expected_preprocess_identity="wrong_id")

@@ -159,18 +159,26 @@ def run_realtime(
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
+    seq_len = 32
+    if hasattr(predictor, "cfg") and predictor.cfg is not None:
+        preprocess_cfg = getattr(predictor.cfg, "preprocess", None)
+        if preprocess_cfg is not None:
+            seq_len = int(getattr(preprocess_cfg, "sequence_length", 32))
+    elif hasattr(predictor, "sequence_length"):
+        seq_len = int(predictor.sequence_length)
+
     logger.info("=" * 60)
     logger.info("REALTIME ISLR STARTED!")
     logger.info(f"- Mode: {mode.upper()}")
-    logger.info("  * AUTO: Buffer activates when hands move; predicts when buffer reaches 32 frames.")
+    logger.info(f"  * AUTO: Buffer activates when hands move; predicts when buffer reaches {seq_len} frames.")
     logger.info("  * SPACEBAR: Press & hold Spacebar to record, release to predict.")
     logger.info("- Press 'q' or 'ESC' to exit.")
     logger.info("- Press 'm' to toggle AUTO / SPACEBAR mode.")
     logger.info("- Press 'c' to clear history.")
     logger.info("=" * 60)
 
-    buffer_coords: deque = deque(maxlen=32)
-    buffer_masks: deque = deque(maxlen=32)
+    buffer_coords: deque = deque(maxlen=seq_len)
+    buffer_masks: deque = deque(maxlen=seq_len)
 
     state = "WAITING"
     last_predicted_gloss = ""
@@ -218,8 +226,8 @@ def run_realtime(
                     buffer_coords.append(coords)
                     buffer_masks.append(mask)
 
-                    # When buffer is full (32 frames ~ 1.0 second), run prediction
-                    if len(buffer_coords) == 32:
+                    # When buffer is full (seq_len frames), run prediction
+                    if len(buffer_coords) == seq_len:
                         raw_c = np.array(buffer_coords, dtype=np.float32)
                         raw_m = np.array(buffer_masks, dtype=bool)
 
@@ -263,7 +271,7 @@ def run_realtime(
                 history=history,
                 mode=mode,
                 buffer_len=len(buffer_coords),
-                max_buffer=32,
+                max_buffer=seq_len,
             )
 
             cv2.imshow("ISLR Realtime Sign Recognition", frame)

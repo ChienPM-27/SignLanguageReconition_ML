@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader, Subset
 
 from src.data.dataset import ISRLandmarkDataset, create_dataloader
 from src.features.normalization import get_feature_dim
+from src.features.schema import compute_preprocess_identity
 from src.models.gru import ASLGRUClassifier
 from src.training.evaluate import evaluate_test_set
 from src.training.metrics import compute_macro_f1, compute_top_k_accuracy, plot_learning_curves
@@ -104,7 +105,7 @@ def run_overfit_check(
     logger.info("Executing Overfit Verification Check (1 sample per gloss, 0 dropout, no aug)...")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_dim = get_feature_dim(cfg.features.set)
+    expected_dim = get_feature_dim(cfg)
     train_ds = ISRLandmarkDataset(
         split_csv=train_csv,
         is_train=True,
@@ -182,16 +183,22 @@ def run_overfit_check(
 def run_baseline_rf(
     cfg: Config,
     train_csv: Path,
-    test_csv: Path,
-    run_dir: Path,
-    class_names: List[str],
+    test_csv: Optional[Path] = None,
+    run_dir: Optional[Path] = None,
+    class_names: Optional[List[str]] = None,
     seed: int = 42,
+    eval_csv: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Train and evaluate Random Forest baseline on feature summary statistics (mean, std, min, max)."""
-    logger.info("Executing Random Forest Tabular Baseline (mean, std, min, max across sequence)...")
-    run_dir.mkdir(parents=True, exist_ok=True)
+    target_eval_csv = eval_csv if eval_csv is not None else test_csv
+    if target_eval_csv is None:
+        raise ValueError("run_baseline_rf requires either eval_csv or test_csv to evaluate.")
 
-    expected_dim = get_feature_dim(cfg.features.set)
+    logger.info("Executing Random Forest Tabular Baseline (mean, std, min, max across sequence)...")
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+    expected_dim = get_feature_dim(cfg)
 
     def extract_rf_features(csv_path: Path) -> Tuple[np.ndarray, np.ndarray]:
         ds = ISRLandmarkDataset(
@@ -218,7 +225,7 @@ def run_baseline_rf(
         return np.array(x_list, dtype=np.float32), np.array(y_list, dtype=np.int64)
 
     x_train, y_train = extract_rf_features(train_csv)
-    x_test, y_test = extract_rf_features(test_csv)
+    x_test, y_test = extract_rf_features(target_eval_csv)
 
     from sklearn.ensemble import RandomForestClassifier
 
@@ -228,14 +235,16 @@ def run_baseline_rf(
     probs = rf.predict_proba(x_test)
     preds = np.argmax(probs, axis=1)
 
+    c_names = class_names if class_names is not None else [str(c) for c in range(len(np.unique(y_train)))]
     top1 = compute_top_k_accuracy(y_test, probs, k=1)
-    top3 = compute_top_k_accuracy(y_test, probs, k=min(3, len(class_names)))
-    f1 = compute_macro_f1(y_test, preds, num_classes=len(class_names))
+    top3 = compute_top_k_accuracy(y_test, probs, k=min(3, len(c_names)))
+    f1 = compute_macro_f1(y_test, preds, num_classes=len(c_names))
 
     report = {
         "mode": "baseline_rf",
         "num_train_samples": len(x_train),
-        "num_test_samples": len(x_test),
+        "num_eval_samples": len(x_test),
+        "eval_split": target_eval_csv.stem,
         "feature_dim_summary": int(x_train.shape[1]),
         "top1_accuracy": round(float(top1), 4),
         "top3_accuracy": round(float(top3), 4),
@@ -244,12 +253,12 @@ def run_baseline_rf(
         "git_commit_hash": get_git_commit_hash(),
     }
 
-    report_path = run_dir / "baseline_rf_report.json"
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    logger.info(
-        f"RF Baseline Complete: Top-1={top1:.4f}, Top-3={top3:.4f}, Macro-F1={f1:.4f}. "
-        f"Report saved to {report_path}"
-    )
+    if run_dir is not None:
+        report_path = run_dir / "baseline_rf_report.json"
+        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        logger.info(
+            f"Baseline RF Report saved to {report_path}: Top-1={top1:.4f}, Top-3={top3:.4f}, Macro-F1={f1:.4f}"
+        )
     return report
 
 
@@ -263,13 +272,15 @@ def train_single_seed(
     device: torch.device,
     run_dir: Path,
     commit_hash: str,
+    label_map: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Train a single GRU model on given seed and output artifacts."""
     logger.info(f"--- Starting Training Run (Seed: {seed}) ---")
     set_seed(seed)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_dim = get_feature_dim(cfg.features.set)
+    expected_dim = get_feature_dim(cfg)
+    expected_identity, _ = compute_preprocess_identity(cfg)
 
     train_ds = ISRLandmarkDataset(
         split_csv=train_csv,
@@ -281,6 +292,8 @@ def train_single_seed(
         strict=True,
         preload=cfg.training.preload,
         device=device,
+        expected_preprocess_identity=expected_identity,
+        normalization_epsilon=cfg.preprocess.normalization_epsilon,
     )
     val_ds = ISRLandmarkDataset(
         split_csv=val_csv,
@@ -291,17 +304,44 @@ def train_single_seed(
         strict=True,
         preload=cfg.training.preload,
         device=device,
+        expected_preprocess_identity=expected_identity,
+        normalization_epsilon=cfg.preprocess.normalization_epsilon,
     )
-    test_ds = ISRLandmarkDataset(
-        split_csv=test_csv,
-        is_train=False,
-        augment=False,
-        sequence_length=cfg.preprocess.sequence_length,
-        feature_dim=expected_dim,
-        strict=True,
-        preload=cfg.training.preload,
-        device=device,
-    )
+
+    if train_ds.preprocess_identity != val_ds.preprocess_identity:
+        raise ValueError(
+            f"Preprocess identity mismatch between train and val datasets: "
+            f"train='{train_ds.preprocess_identity}', val='{val_ds.preprocess_identity}'. "
+            "All splits must share identical preprocessing configuration."
+        )
+
+    if train_ds.preprocess_identity != expected_identity:
+        raise ValueError(
+            f"Dataset preprocess identity '{train_ds.preprocess_identity}' does not match "
+            f"runtime configuration identity '{expected_identity}'."
+        )
+
+    should_evaluate_test = getattr(cfg, "evaluation", None) is not None and cfg.evaluation.evaluate_test
+    test_loader = None
+    if should_evaluate_test:
+        test_ds = ISRLandmarkDataset(
+            split_csv=test_csv,
+            is_train=False,
+            augment=False,
+            sequence_length=cfg.preprocess.sequence_length,
+            feature_dim=expected_dim,
+            strict=True,
+            preload=cfg.training.preload,
+            device=device,
+            expected_preprocess_identity=expected_identity,
+            normalization_epsilon=cfg.preprocess.normalization_epsilon,
+        )
+        test_loader = create_dataloader(
+            test_ds,
+            batch_size=cfg.training.batch_size,
+            shuffle=False,
+            num_workers=cfg.training.num_workers,
+        )
 
     train_loader = create_dataloader(
         train_ds,
@@ -312,12 +352,6 @@ def train_single_seed(
     )
     val_loader = create_dataloader(
         val_ds,
-        batch_size=cfg.training.batch_size,
-        shuffle=False,
-        num_workers=cfg.training.num_workers,
-    )
-    test_loader = create_dataloader(
-        test_ds,
         batch_size=cfg.training.batch_size,
         shuffle=False,
         num_workers=cfg.training.num_workers,
@@ -358,7 +392,10 @@ def train_single_seed(
         scheduler_cfg=cfg.training.scheduler,
         amp=cfg.training.amp,
         resolved_config=cfg.to_dict(),
-        preprocess_identity=getattr(train_ds, "preprocess_identity", None),
+        preprocess_identity=expected_identity,
+        class_names=class_names,
+        label_map=label_map,
+        seed=seed,
     )
 
     # Save history.json
@@ -369,30 +406,54 @@ def train_single_seed(
     lc_path = run_dir / "learning_curves.png"
     plot_learning_curves(history, lc_path)
 
-    # Evaluate on test set
-    test_report_path = run_dir / "test_report.json"
-    test_report = evaluate_test_set(
+    # Always evaluate on validation set using selected best model
+    val_report_path = run_dir / "val_report.json"
+    val_report = evaluate_test_set(
         model=model,
-        test_loader=test_loader,
-        test_csv=test_csv,
+        test_loader=val_loader,
+        test_csv=val_csv,
         class_names=class_names,
         device=device,
         plots_dir=run_dir,
-        report_json_path=test_report_path,
+        report_json_path=val_report_path,
         git_commit_hash=commit_hash,
     )
 
-    logger.info(
-        f"Seed {seed} Completed: Top-1={test_report['top1_accuracy']:.4f}, "
-        f"Top-3={test_report['top3_accuracy']:.4f}, Macro-F1={test_report['macro_f1']:.4f}"
-    )
-    return {
+    test_report = None
+    if should_evaluate_test and test_loader is not None:
+        test_report_path = run_dir / "test_report.json"
+        test_report = evaluate_test_set(
+            model=model,
+            test_loader=test_loader,
+            test_csv=test_csv,
+            class_names=class_names,
+            device=device,
+            plots_dir=run_dir,
+            report_json_path=test_report_path,
+            git_commit_hash=commit_hash,
+        )
+        logger.info(
+            f"Seed {seed} Completed: Val Top-1={val_report['top1_accuracy']:.4f}, Val F1={val_report['macro_f1']:.4f} | "
+            f"Test Top-1={test_report['top1_accuracy']:.4f}, Test F1={test_report['macro_f1']:.4f}"
+        )
+    else:
+        logger.info(
+            f"Seed {seed} Completed: Val Loss={val_report['loss']:.4f}, "
+            f"Val Top-1={val_report['top1_accuracy']:.4f}, Val Top-3={val_report['top3_accuracy']:.4f}, "
+            f"Val Macro-F1={val_report['macro_f1']:.4f}"
+        )
+
+    res: Dict[str, Any] = {
         "seed": seed,
         "run_dir": str(run_dir),
-        "test_report": test_report,
-        "best_val_loss": history.get("best_val_loss"),
-        "best_val_acc": history.get("best_val_acc"),
+        "val_report": val_report,
+        "best_val_loss": val_report["loss"],
+        "best_val_acc": val_report["top1_accuracy"],
+        "best_val_f1": val_report["macro_f1"],
     }
+    if test_report is not None:
+        res["test_report"] = test_report
+    return res
 
 
 def run_training_pipeline(
@@ -407,6 +468,10 @@ def run_training_pipeline(
     cfg = load_config(config_path=config_path, overrides=overrides)
     if resume is not None:
         cfg.training.resume_checkpoint = resume
+    if seeds_override is not None:
+        cfg.training.seeds = list(seeds_override)
+        cfg.training.num_seeds = len(seeds_override)
+
     paths = resolve_paths(detect_env(), cfg, create_dirs=True)
     device = select_device(cfg.training.device)
     commit_hash = get_git_commit_hash()
@@ -422,7 +487,7 @@ def run_training_pipeline(
         if not req.is_file():
             raise FileNotFoundError(f"Missing required split file {req}. Run prepare_data first.")
 
-    class_names, _ = load_class_metadata(splits_dir)
+    class_names, label_map = load_class_metadata(splits_dir)
 
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_run_name = f"{timestamp_str}_{cfg.run.name}"
@@ -447,10 +512,11 @@ def run_training_pipeline(
     # Mode 2: Random Forest Baseline
     if baseline_rf:
         seed = cfg.training.seeds[0] if cfg.training.seeds else 42
+        eval_csv = test_csv if cfg.evaluation.evaluate_test else val_csv
         run_baseline_rf(
             cfg=cfg,
             train_csv=train_csv,
-            test_csv=test_csv,
+            eval_csv=eval_csv,
             run_dir=run_dir,
             class_names=class_names,
             seed=seed,
@@ -458,9 +524,7 @@ def run_training_pipeline(
         return 0
 
     # Mode 3: Multi-seed (or single-seed) GRU Training
-    target_seeds = seeds_override if seeds_override is not None else cfg.training.seeds
-    if not target_seeds:
-        target_seeds = [42]
+    target_seeds = list(cfg.training.seeds) if cfg.training.seeds else [42]
 
     results = []
     for s in target_seeds:
@@ -475,32 +539,44 @@ def run_training_pipeline(
             device=device,
             run_dir=seed_run_dir,
             commit_hash=commit_hash,
+            label_map=label_map,
         )
         results.append(res)
 
     # Aggregate multi-seed summary
     if len(results) > 1:
-        top1_vals = [r["test_report"]["top1_accuracy"] for r in results]
-        top3_vals = [r["test_report"]["top3_accuracy"] for r in results]
-        f1_vals = [r["test_report"]["macro_f1"] for r in results]
+        val_top1_vals = [r["val_report"]["top1_accuracy"] for r in results]
+        val_top3_vals = [r["val_report"]["top3_accuracy"] for r in results]
+        val_f1_vals = [r["val_report"]["macro_f1"] for r in results]
+        val_loss_vals = [r["val_report"]["loss"] for r in results]
 
-        summary = {
+        summary: Dict[str, Any] = {
             "num_seeds": len(results),
             "seeds": target_seeds,
             "git_commit_hash": commit_hash,
-            "top1_accuracy_mean": round(float(np.mean(top1_vals)), 4),
-            "top1_accuracy_std": round(float(np.std(top1_vals)), 4),
-            "top3_accuracy_mean": round(float(np.mean(top3_vals)), 4),
-            "top3_accuracy_std": round(float(np.std(top3_vals)), 4),
-            "macro_f1_mean": round(float(np.mean(f1_vals)), 4),
-            "macro_f1_std": round(float(np.std(f1_vals)), 4),
+            "val_top1_accuracy_mean": round(float(np.mean(val_top1_vals)), 4),
+            "val_top1_accuracy_std": round(float(np.std(val_top1_vals)), 4),
+            "val_top3_accuracy_mean": round(float(np.mean(val_top3_vals)), 4),
+            "val_top3_accuracy_std": round(float(np.std(val_top3_vals)), 4),
+            "val_macro_f1_mean": round(float(np.mean(val_f1_vals)), 4),
+            "val_macro_f1_std": round(float(np.std(val_f1_vals)), 4),
+            "val_loss_mean": round(float(np.mean(val_loss_vals)), 4),
+            "val_loss_std": round(float(np.std(val_loss_vals)), 4),
             "individual_runs": results,
         }
+        if any("test_report" in r for r in results):
+            test_top1_vals = [r["test_report"]["top1_accuracy"] for r in results if "test_report" in r]
+            test_f1_vals = [r["test_report"]["macro_f1"] for r in results if "test_report" in r]
+            summary["test_top1_accuracy_mean"] = round(float(np.mean(test_top1_vals)), 4)
+            summary["test_top1_accuracy_std"] = round(float(np.std(test_top1_vals)), 4)
+            summary["test_macro_f1_mean"] = round(float(np.mean(test_f1_vals)), 4)
+            summary["test_macro_f1_std"] = round(float(np.std(test_f1_vals)), 4)
+
         sum_path = run_dir / "multi_seed_summary.json"
         sum_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         logger.info(
-            f"Multi-Seed Summary: Top-1={summary['top1_accuracy_mean']:.4f} ± {summary['top1_accuracy_std']:.4f} | "
-            f"Macro-F1={summary['macro_f1_mean']:.4f} ± {summary['macro_f1_std']:.4f}. Saved to {sum_path}"
+            f"Multi-Seed Summary: Val Top-1={summary['val_top1_accuracy_mean']:.4f} ± {summary['val_top1_accuracy_std']:.4f} | "
+            f"Val Macro-F1={summary['val_macro_f1_mean']:.4f} ± {summary['val_macro_f1_std']:.4f}. Saved to {sum_path}"
         )
 
     return 0

@@ -17,56 +17,131 @@ import math
 from typing import Any, Dict, Optional
 import numpy as np
 
+from src.features.normalization import (
+    compute_bend_cosines,
+    compute_fingertip_displacements,
+)
 from src.features.schema import (
     SLICE_GLOBAL_WRISTS,
     SLICE_HAND_MASKS,
     SLICE_LOCAL_HAND_SHAPES,
     SLICE_NORM_POSE,
     SLICE_POSE_MASK,
-    SLICE_REL_WRIST,
     SLICE_SHOULDER_SCALE,
     SLICE_TORSO_VEL,
-    SLICE_WRIST_VEL,
+    infer_feature_layout_from_dim,
 )
 
 
-def recompute_derived_features(features: np.ndarray) -> np.ndarray:
-    """Recompute relative wrist [132:135] and wrist velocity [135:141] using gated valid endpoints.
+def recompute_derived_features(
+    features: np.ndarray,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Recompute relative wrist, velocities, fingertip displacements, and bend cosines.
 
-    Contract:
-    - w[t, h] = coords if m[t, h] else 0.0
-    - r[t] = w[t, 0] - w[t, 1] if m[t, 0] and m[t, 1] else 0.0
-    - v[0, h] = 0.0
-    - v[t, h] = w[t, h] - w[t-1, h] if m[t, h] and m[t-1, h] else 0.0
-    - If D >= 160: sanitize unsupported pose channels and gate torso velocity u[t] on p[t] and p[t-1].
+    Layout-aware contract:
+    - If layout.wrist_reference == 'torso_xy': gated on geometry support mask g[t, h], wrists z strictly 0.
+    - If layout.wrist_reference == 'image': gated on hand support mask m[t, h].
+    - Pose velocity gated on adjacent valid pose frames and pose transitions.
+    - Local fingertip displacements and bend cosines recomputed from current local shapes.
+    - Preserves zero motion across long gaps where transitions are invalid.
     """
     out = features.copy()
     T, D = out.shape
-    if D >= 143:
-        m = out[:, SLICE_HAND_MASKS] > 0.5  # (T, 2)
-        wrists = out[:, SLICE_GLOBAL_WRISTS].reshape(T, 2, 3)
-        # Ensure unsupported wrists are strictly zeroed
-        wrists = np.where(m[:, :, np.newaxis], wrists, 0.0)
-        out[:, SLICE_GLOBAL_WRISTS] = wrists.reshape(T, 6)
+    if D < 143:
+        return out
 
-        two_hand_mask = (m[:, 0] & m[:, 1])[:, np.newaxis]
-        rel_wrist = wrists[:, 0, :] - wrists[:, 1, :]
-        out[:, SLICE_REL_WRIST] = np.where(two_hand_mask, rel_wrist, 0.0)
+    layout = infer_feature_layout_from_dim(D)
+    m = out[:, layout.slice_hand_masks] > 0.5  # (T, 2)
+    wrists = out[:, layout.slice_wrists].reshape(T, 2, 3)
+
+    if hand_transitions is not None:
+        h_trans = hand_transitions[1:, :2] if len(hand_transitions) == T else (hand_transitions[:, :2] if hand_transitions.ndim > 1 else hand_transitions[:, np.newaxis])
+    else:
+        # Infer transition validity from input features: if input had 0 velocity/displacement while delta was non-zero,
+        # it represents a long dropout gap where transitions must NOT be revived.
+        initial_wrist_vel = features[:, layout.slice_wrist_vel].reshape(T, 2, 3)
+        old_wrists = features[:, layout.slice_wrists].reshape(T, 2, 3)
+        old_delta = old_wrists[1:, :, :2] - old_wrists[:-1, :, :2]
+        has_delta = np.any(np.abs(old_delta) > 1e-6, axis=-1)
+        is_zero_vel = np.all(np.abs(initial_wrist_vel[1:, :, :2]) < 1e-6, axis=-1)
+        h_trans = ~(has_delta & is_zero_vel)
+        if layout.slice_fingertip_displacement is not None:
+            initial_tips = features[:, layout.slice_fingertip_displacement].reshape(T, 2, 5, 3)
+            old_shapes = features[:, layout.slice_local_hand_shapes].reshape(T, 2, 21, 3)
+            old_tip_pts = old_shapes[:, :, [4, 8, 12, 16, 20], :]
+            old_tip_delta = old_tip_pts[1:] - old_tip_pts[:-1]
+            has_tip_delta = np.any(np.abs(old_tip_delta) > 1e-6, axis=(2, 3))
+            is_zero_tip = np.all(np.abs(initial_tips[1:]) < 1e-6, axis=(2, 3))
+            h_trans = h_trans & ~(has_tip_delta & is_zero_tip)
+
+    if pose_transitions is not None:
+        p_trans = pose_transitions[1:, 0:1] if len(pose_transitions) == T else (pose_transitions[:, 0:1] if pose_transitions.ndim > 1 else pose_transitions[:, np.newaxis])
+    elif layout.has_pose and layout.slice_torso_vel is not None:
+        initial_torso_vel = features[:, layout.slice_torso_vel]
+        old_pose = features[:, layout.slice_norm_pose].reshape(T, 4, 3)
+        old_torso_delta = old_pose[1:, 0, :2] - old_pose[:-1, 0, :2]
+        has_torso_delta = np.any(np.abs(old_torso_delta) > 1e-6, axis=-1)
+        is_zero_torso_vel = np.all(np.abs(initial_torso_vel[1:]) < 1e-6, axis=-1)
+        p_trans = ~(has_torso_delta & is_zero_torso_vel)[:, np.newaxis]
+    else:
+        p_trans = np.ones((T - 1, 1), dtype=bool)
+
+    if layout.wrist_reference == "torso_xy" and layout.slice_geometry_support is not None:
+        g = out[:, layout.slice_geometry_support] > 0.5  # (T, 2)
+        wrists = np.where(g[:, :, np.newaxis], wrists, 0.0)
+        wrists[:, :, 2] = 0.0  # Invariant: Torso-relative wrist z strictly 0
+        out[:, layout.slice_wrists] = wrists.reshape(T, 6)
+
+        both_g = (g[:, 0] & g[:, 1])[:, np.newaxis]
+        rel_wrist = np.zeros((T, 3), dtype=out.dtype)
+        rel_wrist[:, :2] = np.where(both_g, wrists[:, 0, :2] - wrists[:, 1, :2], 0.0)
+        rel_wrist[:, 2] = 0.0
+        out[:, layout.slice_rel_wrist] = rel_wrist
 
         wrist_vel = np.zeros((T, 2, 3), dtype=out.dtype)
         if T > 1:
-            vel_valid = (m[1:, :] & m[:-1, :])[:, :, np.newaxis]
-            wrist_vel[1:] = np.where(vel_valid, wrists[1:] - wrists[:-1], 0.0)
-        out[:, SLICE_WRIST_VEL] = wrist_vel.reshape(T, 6)
+            vel_g = (g[1:, :] & g[:-1, :] & h_trans & p_trans)[:, :, np.newaxis]
+            diff = wrists[1:, :, :2] - wrists[:-1, :, :2]
+            wrist_vel[1:, :, :2] = np.where(vel_g[:, :, :2], diff, 0.0)
+            wrist_vel[:, :, 2] = 0.0
+        out[:, layout.slice_wrist_vel] = wrist_vel.reshape(T, 6)
+    else:
+        wrists = np.where(m[:, :, np.newaxis], wrists, 0.0)
+        out[:, layout.slice_wrists] = wrists.reshape(T, 6)
 
-    if D >= 160:
-        p = out[:, SLICE_POSE_MASK].flatten() > 0.5  # (T,)
-        out[:, SLICE_NORM_POSE] = np.where(p[:, np.newaxis], out[:, SLICE_NORM_POSE], 0.0)
-        out[:, SLICE_SHOULDER_SCALE] = np.where(p[:, np.newaxis], out[:, SLICE_SHOULDER_SCALE], 0.0)
+        two_hand_mask = (m[:, 0] & m[:, 1])[:, np.newaxis]
+        rel_wrist = wrists[:, 0, :] - wrists[:, 1, :]
+        out[:, layout.slice_rel_wrist] = np.where(two_hand_mask, rel_wrist, 0.0)
+
+        wrist_vel = np.zeros((T, 2, 3), dtype=out.dtype)
+        if T > 1:
+            vel_valid = (m[1:, :] & m[:-1, :] & h_trans)[:, :, np.newaxis]
+            wrist_vel[1:] = np.where(vel_valid, wrists[1:] - wrists[:-1], 0.0)
+        out[:, layout.slice_wrist_vel] = wrist_vel.reshape(T, 6)
+
+    if layout.slice_norm_pose is not None:
+        p = out[:, layout.slice_pose_mask].flatten() > 0.5
+        out[:, layout.slice_norm_pose] = np.where(p[:, np.newaxis], out[:, layout.slice_norm_pose], 0.0)
+        out[:, layout.slice_shoulder_scale] = np.where(p[:, np.newaxis], out[:, layout.slice_shoulder_scale], 0.0)
         u_valid = np.zeros(T, dtype=bool)
         if T > 1:
-            u_valid[1:] = p[1:] & p[:-1]
-        out[:, SLICE_TORSO_VEL] = np.where(u_valid[:, np.newaxis], out[:, SLICE_TORSO_VEL], 0.0)
+            u_valid[1:] = p[1:] & p[:-1] & p_trans[:, 0]
+        out[:, layout.slice_torso_vel] = np.where(u_valid[:, np.newaxis], out[:, layout.slice_torso_vel], 0.0)
+
+    # Recompute fingertip displacement if present
+    if layout.slice_fingertip_displacement is not None:
+        shapes = out[:, layout.slice_local_hand_shapes].reshape(T, 2, 21, 3)
+        tip_disp = compute_fingertip_displacements(shapes, m[:, :2], transitions=h_trans)
+        out[:, layout.slice_fingertip_displacement] = tip_disp
+
+    # Recompute bend cosines if present
+    if layout.slice_bend_cosines is not None:
+        shapes = out[:, layout.slice_local_hand_shapes].reshape(T, 2, 21, 3)
+        bends = compute_bend_cosines(shapes, m[:, :2], normalization_epsilon=normalization_epsilon)
+        out[:, layout.slice_bend_cosines] = bends
 
     return out
 
@@ -76,16 +151,21 @@ def add_jitter(
     sigma: float = 0.01,
     noise_shape: Optional[np.ndarray] = None,
     noise_wrist: Optional[np.ndarray] = None,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Add Gaussian noise to local hand shapes and wrists on usable slots, then recompute motion.
 
     Local hand shape jitter keeps landmark 0 (wrist origin) identically 0.
+    In torso_xy mode, wrist z jitter is strictly 0.0.
     """
     out = features.copy()
     T, D = out.shape
     if sigma <= 0.0:
         return out
 
+    layout = infer_feature_layout_from_dim(D) if D >= 143 else None
     m = out[:, SLICE_HAND_MASKS] > 0.5 if D >= 143 else np.ones((T, 2), dtype=bool)
 
     # 1. Local shapes [0:126] -> (T, 2, 21, 3)
@@ -97,12 +177,11 @@ def add_jitter(
             noise_s = np.array(noise_shape, dtype=np.float32).copy()
             if noise_s.ndim == 2 and noise_s.shape == (T, 126):
                 noise_s = noise_s.reshape(T, 2, 21, 3)
-        # Keep local wrist landmark 0 zero
         noise_s[:, :, 0, :] = 0.0
         shapes = np.where(m[:, :, np.newaxis, np.newaxis], shapes + noise_s, 0.0)
         out[:, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(T, 126)
 
-    # 2. Global wrists [126:132] -> (T, 2, 3)
+    # 2. Wrists [126:132] -> (T, 2, 3)
     if D >= 132:
         wrists = out[:, SLICE_GLOBAL_WRISTS].reshape(T, 2, 3)
         if noise_wrist is None:
@@ -111,12 +190,27 @@ def add_jitter(
             noise_w = np.array(noise_wrist, dtype=np.float32).copy()
             if noise_w.ndim == 2 and noise_w.shape == (T, 6):
                 noise_w = noise_w.reshape(T, 2, 3)
-        wrists = np.where(m[:, :, np.newaxis], wrists + noise_w, 0.0)
+        if layout and layout.wrist_reference == "torso_xy":
+            noise_w[:, :, 2] = 0.0
+            g_mask = (
+                out[:, layout.slice_geometry_support] > 0.5
+                if layout.slice_geometry_support is not None
+                else m
+            )
+            wrists = np.where(g_mask[:, :, np.newaxis], wrists + noise_w, 0.0)
+            wrists[:, :, 2] = 0.0
+        else:
+            wrists = np.where(m[:, :, np.newaxis], wrists + noise_w, 0.0)
         out[:, SLICE_GLOBAL_WRISTS] = wrists.reshape(T, 6)
 
     # 3. Recompute motion to maintain internal consistency
     if D >= 143:
-        out = recompute_derived_features(out)
+        out = recompute_derived_features(
+            out,
+            normalization_epsilon=normalization_epsilon,
+            hand_transitions=hand_transitions,
+            pose_transitions=pose_transitions,
+        )
 
     return out
 
@@ -125,11 +219,15 @@ def random_rotate_2d(
     features: np.ndarray,
     max_angle_deg: float = 8.0,
     angle_deg: Optional[float] = None,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Rotate points in the (x, y) plane for usable slots and recompute motion.
 
     - Local shapes rotate around (0, 0).
-    - Global wrists rotate around (0.5, 0.5).
+    - Image wrists rotate around (0.5, 0.5).
+    - Torso-relative wrists rotate around (0, 0).
     - Torso-normalized pose rotates around (0, 0).
     - Torso velocity rotates in the xy plane.
     """
@@ -141,6 +239,7 @@ def random_rotate_2d(
 
     out = features.copy()
     T, D = out.shape
+    layout = infer_feature_layout_from_dim(D) if D >= 143 else None
     m = out[:, SLICE_HAND_MASKS] > 0.5 if D >= 143 else np.ones((T, 2), dtype=bool)
 
     # 1. Local shapes [0:126] -> (T, 2, 21, 3)
@@ -152,21 +251,28 @@ def random_rotate_2d(
         shapes[:, :, :, 2] = np.where(m[:, :, np.newaxis], shapes[:, :, :, 2], 0.0)
         out[:, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(T, 126)
 
-    # 2. Global wrists [126:132] -> (T, 2, 3)
+    # 2. Wrists [126:132] -> (T, 2, 3)
     if D >= 132:
         wrists = out[:, SLICE_GLOBAL_WRISTS].reshape(T, 2, 3)
-        w_xy = wrists[:, :, :2].reshape(-1, 2) - 0.5
-        w_xy_rot = (w_xy @ rot_matrix.T + 0.5).reshape(T, 2, 2)
-        wrists[:, :, :2] = np.where(m[:, :, np.newaxis], w_xy_rot, 0.0)
-        wrists[:, :, 2] = np.where(m, wrists[:, :, 2], 0.0)
+        if layout and layout.wrist_reference == "torso_xy":
+            g_mask = (
+                out[:, layout.slice_geometry_support] > 0.5
+                if layout.slice_geometry_support is not None
+                else m
+            )
+            w_xy = wrists[:, :, :2].reshape(-1, 2)
+            w_xy_rot = (w_xy @ rot_matrix.T).reshape(T, 2, 2)
+            wrists[:, :, :2] = np.where(g_mask[:, :, np.newaxis], w_xy_rot, 0.0)
+            wrists[:, :, 2] = 0.0
+        else:
+            w_xy = wrists[:, :, :2].reshape(-1, 2) - 0.5
+            w_xy_rot = (w_xy @ rot_matrix.T + 0.5).reshape(T, 2, 2)
+            wrists[:, :, :2] = np.where(m[:, :, np.newaxis], w_xy_rot, 0.0)
+            wrists[:, :, 2] = np.where(m, wrists[:, :, 2], 0.0)
         out[:, SLICE_GLOBAL_WRISTS] = wrists.reshape(T, 6)
 
-    # 3. Recompute wrist derived features
-    if D >= 143:
-        out = recompute_derived_features(out)
-
-    # 4. Pose rotation [143:155] (4 points) and torso velocity [155:158]
-    if D >= 160:
+    # 3. Pose rotation [143:155] (4 points) and torso velocity [155:158]
+    if layout and layout.has_pose:
         p = out[:, SLICE_POSE_MASK].flatten() > 0.5
         pose = out[:, SLICE_NORM_POSE].reshape(T, 4, 3)
         p_xy = pose[:, :, :2].reshape(-1, 2)
@@ -186,23 +292,38 @@ def random_rotate_2d(
         out[:, SLICE_TORSO_VEL] = u
         out[:, SLICE_SHOULDER_SCALE] = np.where(p[:, np.newaxis], out[:, SLICE_SHOULDER_SCALE], 0.0)
 
+    # 4. Recompute derived features
+    if D >= 143:
+        out = recompute_derived_features(
+            out,
+            normalization_epsilon=normalization_epsilon,
+            hand_transitions=hand_transitions,
+            pose_transitions=pose_transitions,
+        )
+
     return out
 
 
-def horizontal_flip(features: np.ndarray, swap_hands: bool = False) -> np.ndarray:
+def horizontal_flip(
+    features: np.ndarray,
+    swap_hands: bool = False,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """Horizontal mirror reflection across x axis.
 
     Exact mathematical contract:
     - H'[t, h, j] = diag(-1, 1, 1) H[t, h, j]
-    - w'[t, h] = (1 - w_x, w_y, w_z)
+    - w'[t, h] = (-w_x, w_y, 0) if torso_xy else (1 - w_x, w_y, w_z)
     - q'[t, k] = diag(-1, 1, 1) q[t, pi[k]] where pi = [1, 0, 3, 2]
     - u'[t] = diag(-1, 1, 1) u[t]
-    - b'[t] = b[t]; p'[t] = p[t]
     - Unsupported slots strictly remain 0.
     """
     out = features.copy()
     T, D = out.shape
 
+    layout = infer_feature_layout_from_dim(D) if D >= 143 else None
     m = out[:, SLICE_HAND_MASKS] > 0.5 if D >= 143 else np.ones((T, 2), dtype=bool)
 
     # 1. Local Shapes (126 dims)
@@ -214,28 +335,48 @@ def horizontal_flip(features: np.ndarray, swap_hands: bool = False) -> np.ndarra
             shapes = shapes[:, [1, 0], :, :]
         out[:, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(T, 126)
 
-    # 2. Global Wrists (6 dims)
+    # 2. Wrists (6 dims)
     if D >= 132:
         wrists = out[:, SLICE_GLOBAL_WRISTS].reshape(T, 2, 3)
-        wrists[:, :, 0] = np.where(m, 1.0 - wrists[:, :, 0], 0.0)
-        wrists[:, :, 1:] = np.where(m[:, :, np.newaxis], wrists[:, :, 1:], 0.0)
+        if layout and layout.wrist_reference == "torso_xy":
+            g_mask = (
+                out[:, layout.slice_geometry_support] > 0.5
+                if layout.slice_geometry_support is not None
+                else m
+            )
+            wrists[:, :, 0] = np.where(g_mask, -wrists[:, :, 0], 0.0)
+            wrists[:, :, 1:] = np.where(g_mask[:, :, np.newaxis], wrists[:, :, 1:], 0.0)
+            wrists[:, :, 2] = 0.0
+        else:
+            wrists[:, :, 0] = np.where(m, 1.0 - wrists[:, :, 0], 0.0)
+            wrists[:, :, 1:] = np.where(m[:, :, np.newaxis], wrists[:, :, 1:], 0.0)
         if swap_hands:
             wrists = wrists[:, [1, 0], :]
         out[:, SLICE_GLOBAL_WRISTS] = wrists.reshape(T, 6)
 
-    # 3. Swap Hand Masks if swap_hands is requested
+    # 3. Swap Hand Masks, Geometry Support, and hand slots if swap_hands is requested
     if D >= 143 and swap_hands:
         out[:, SLICE_HAND_MASKS] = out[:, [142, 141]]
+        if layout and layout.slice_geometry_support is not None:
+            geom_s = layout.slice_geometry_support
+            out[:, geom_s] = out[:, [geom_s.start + 1, geom_s.start]]
+        if layout and layout.slice_wrist_vel is not None:
+            w_vel = out[:, layout.slice_wrist_vel].reshape(T, 2, 3)
+            out[:, layout.slice_wrist_vel] = w_vel[:, [1, 0], :].reshape(T, 6)
+        if layout and layout.slice_fingertip_displacement is not None:
+            f_disp = out[:, layout.slice_fingertip_displacement].reshape(T, 2, 5, 3)
+            out[:, layout.slice_fingertip_displacement] = f_disp[:, [1, 0], :, :].reshape(T, 30)
+        if layout and layout.slice_bend_cosines is not None:
+            b_cos = out[:, layout.slice_bend_cosines].reshape(T, 2, 5, 2)
+            out[:, layout.slice_bend_cosines] = b_cos[:, [1, 0], :, :].reshape(T, 20)
+        if hand_transitions is not None and hand_transitions.ndim > 1:
+            hand_transitions = hand_transitions[:, [1, 0]]
 
-    # 4. Recompute wrist motion features
-    if D >= 143:
-        out = recompute_derived_features(out)
-
-    # 5. Pose landmarks (12 coords torso-centered, 3 coords torso velocity)
-    if D >= 160:
+    # 4. Pose landmarks (12 coords torso-centered, 3 coords torso velocity)
+    if layout and layout.has_pose:
         p = out[:, SLICE_POSE_MASK].flatten() > 0.5
         pose = out[:, SLICE_NORM_POSE].reshape(T, 4, 3)
-        # Torso-centered coordinates: negate x (NOT 1 - x!)
+        # Torso-centered coordinates: negate x
         pose[:, :, 0] = np.where(p[:, np.newaxis], -pose[:, :, 0], 0.0)
         pose[:, :, 1:] = np.where(p[:, np.newaxis, np.newaxis], pose[:, :, 1:], 0.0)
         # Swap anatomical sides: L_shoulder <-> R_shoulder, L_elbow <-> R_elbow
@@ -250,8 +391,16 @@ def horizontal_flip(features: np.ndarray, swap_hands: bool = False) -> np.ndarra
         u[:, 0] = np.where(u_valid, -u[:, 0], 0.0)
         u[:, 1:] = np.where(u_valid[:, np.newaxis], u[:, 1:], 0.0)
         out[:, SLICE_TORSO_VEL] = u
-
         out[:, SLICE_SHOULDER_SCALE] = np.where(p[:, np.newaxis], out[:, SLICE_SHOULDER_SCALE], 0.0)
+
+    # 5. Recompute derived features (relative wrist, velocities, fingertips, bends)
+    if D >= 143:
+        out = recompute_derived_features(
+            out,
+            normalization_epsilon=normalization_epsilon,
+            hand_transitions=hand_transitions,
+            pose_transitions=pose_transitions,
+        )
 
     return out
 
@@ -261,6 +410,9 @@ def shape_scale(
     r: float = 0.10,
     sx: Optional[float] = None,
     sy: Optional[float] = None,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Scale x and y axes of local hand shapes [0:126] for usable slots."""
     out = features.copy()
@@ -283,6 +435,14 @@ def shape_scale(
     shapes[:, :, :, 2] = np.where(m[:, :, np.newaxis], shapes[:, :, :, 2], 0.0)
     out[:, SLICE_LOCAL_HAND_SHAPES] = shapes.reshape(T, 126)
 
+    if D >= 143:
+        out = recompute_derived_features(
+            out,
+            normalization_epsilon=normalization_epsilon,
+            hand_transitions=hand_transitions,
+            pose_transitions=pose_transitions,
+        )
+
     return out
 
 
@@ -295,12 +455,22 @@ def scale_translate(
     t: Optional[Any] = None,
     tx: Optional[float] = None,
     ty: Optional[float] = None,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Scale and translate global wrist coordinates for usable slots, then recompute motion."""
     out = features.copy()
     T, D = out.shape
     if D < 132:
         return out
+
+    layout = infer_feature_layout_from_dim(D) if D >= 143 else None
+    if layout and layout.wrist_reference == "torso_xy":
+        raise ValueError(
+            "scale_translate is not supported when features.wrist_reference='torso_xy'. "
+            "Wrist-only image scale and translation corrupts torso-relative coordinate geometry."
+        )
 
     if t is not None:
         if isinstance(t, (tuple, list, np.ndarray)) and len(t) == 2:
@@ -327,7 +497,12 @@ def scale_translate(
     out[:, SLICE_GLOBAL_WRISTS] = wrists.reshape(T, 6)
 
     if D >= 143:
-        out = recompute_derived_features(out)
+        out = recompute_derived_features(
+            out,
+            normalization_epsilon=normalization_epsilon,
+            hand_transitions=hand_transitions,
+            pose_transitions=pose_transitions,
+        )
 
     return out
 
@@ -347,86 +522,112 @@ def _get_aug_param(cfg_dict: Dict[str, Any], key: str, default: Any) -> Any:
     return val if val is not None else default
 
 
-def apply_augmentation(features: np.ndarray, cfg: Any = None) -> np.ndarray:
-    """Apply sequence of spatial augmentations according to AugmentationConfig or dict."""
+def apply_augmentation(
+    features: np.ndarray,
+    cfg: Any = None,
+    normalization_epsilon: float = 1e-4,
+    hand_transitions: Optional[np.ndarray] = None,
+    pose_transitions: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Apply stochastic augmentation pipeline based on Config object or dictionary."""
     if cfg is None:
-        return apply_random_augmentation(features)
+        return features
 
-    flip_cfg = getattr(cfg, "flip", {}) if not isinstance(cfg, dict) else cfg.get("flip", {})
-    rotate_cfg = getattr(cfg, "rotate", {}) if not isinstance(cfg, dict) else cfg.get("rotate", {})
-    shape_scale_cfg = getattr(cfg, "shape_scale", {}) if not isinstance(cfg, dict) else cfg.get("shape_scale", {})
-    scale_translate_cfg = getattr(cfg, "scale_translate", {}) if not isinstance(cfg, dict) else cfg.get("scale_translate", {})
-    jitter_cfg = getattr(cfg, "jitter", {}) if not isinstance(cfg, dict) else cfg.get("jitter", {})
-    stretch_cfg = getattr(cfg, "time_stretch", {}) if not isinstance(cfg, dict) else cfg.get("time_stretch", {})
+    aug_cfg = getattr(cfg, "augmentation", cfg)
+    if isinstance(aug_cfg, dict):
+        flip_cfg = aug_cfg.get("flip", {})
+        rotate_cfg = aug_cfg.get("rotate", {})
+        shape_scale_cfg = aug_cfg.get("shape_scale", {})
+        scale_trans_cfg = aug_cfg.get("scale_translate", {})
+        jitter_cfg = aug_cfg.get("jitter", {})
+    else:
+        flip_cfg = getattr(aug_cfg, "flip", {})
+        rotate_cfg = getattr(aug_cfg, "rotate", {})
+        shape_scale_cfg = getattr(aug_cfg, "shape_scale", {})
+        scale_trans_cfg = getattr(aug_cfg, "scale_translate", {})
+        jitter_cfg = getattr(aug_cfg, "jitter", {})
 
     out = features.copy()
 
-    applied = False
-
     # 1. Flip
-    if _get_aug_param(flip_cfg, "enabled", False):
+    if flip_cfg.get("enabled", False):
         prob = float(_get_aug_param(flip_cfg, "prob", 0.5))
-        swap_hands = bool(_get_aug_param(flip_cfg, "swap_hands", False))
         if np.random.rand() < prob:
-            out = horizontal_flip(out, swap_hands=swap_hands)
-            applied = True
+            swap_hands = bool(_get_aug_param(flip_cfg, "swap_hands", False))
+            out = horizontal_flip(
+                out,
+                swap_hands=swap_hands,
+                normalization_epsilon=normalization_epsilon,
+                hand_transitions=hand_transitions,
+                pose_transitions=pose_transitions,
+            )
 
     # 2. Rotate
-    if _get_aug_param(rotate_cfg, "enabled", False):
+    if rotate_cfg.get("enabled", False):
         prob = float(_get_aug_param(rotate_cfg, "prob", 0.5))
-        max_angle = float(_get_aug_param(rotate_cfg, "max_angle_deg", 8.0))
         if np.random.rand() < prob:
-            out = random_rotate_2d(out, max_angle_deg=max_angle)
-            applied = True
+            max_angle = float(_get_aug_param(rotate_cfg, "max_angle_deg", 8.0))
+            out = random_rotate_2d(
+                out,
+                max_angle_deg=max_angle,
+                normalization_epsilon=normalization_epsilon,
+                hand_transitions=hand_transitions,
+                pose_transitions=pose_transitions,
+            )
 
     # 3. Shape Scale
-    if _get_aug_param(shape_scale_cfg, "enabled", False):
+    if shape_scale_cfg.get("enabled", False):
         prob = float(_get_aug_param(shape_scale_cfg, "prob", 0.5))
         r = float(_get_aug_param(shape_scale_cfg, "r", 0.10))
-        if np.random.rand() < prob:
-            out = shape_scale(out, r=r)
-            applied = True
+        if np.random.rand() < prob and r > 0.0:
+            out = shape_scale(
+                out,
+                r=r,
+                normalization_epsilon=normalization_epsilon,
+                hand_transitions=hand_transitions,
+                pose_transitions=pose_transitions,
+            )
 
     # 4. Scale & Translate
-    if _get_aug_param(scale_translate_cfg, "enabled", False):
-        prob = float(_get_aug_param(scale_translate_cfg, "prob", 0.7))
-        scale_min = float(_get_aug_param(scale_translate_cfg, "scale_min", 0.85))
-        scale_max = float(_get_aug_param(scale_translate_cfg, "scale_max", 1.15))
-        translate = float(_get_aug_param(scale_translate_cfg, "translate", 0.10))
+    if scale_trans_cfg.get("enabled", False):
+        prob = float(_get_aug_param(scale_trans_cfg, "prob", 0.7))
         if np.random.rand() < prob:
-            out = scale_translate(out, scale_min=scale_min, scale_max=scale_max, translate=translate)
-            applied = True
+            s_min = float(_get_aug_param(scale_trans_cfg, "scale_min", 0.85))
+            s_max = float(_get_aug_param(scale_trans_cfg, "scale_max", 1.15))
+            trans = float(_get_aug_param(scale_trans_cfg, "translate", 0.10))
+            out = scale_translate(
+                out,
+                scale_min=s_min,
+                scale_max=s_max,
+                translate=trans,
+                normalization_epsilon=normalization_epsilon,
+                hand_transitions=hand_transitions,
+                pose_transitions=pose_transitions,
+            )
 
     # 5. Jitter
-    if _get_aug_param(jitter_cfg, "enabled", False):
+    if jitter_cfg.get("enabled", False):
         prob = float(_get_aug_param(jitter_cfg, "prob", 0.5))
-        sigma = float(_get_aug_param(jitter_cfg, "sigma", 0.01))
         if np.random.rand() < prob:
-            out = add_jitter(out, sigma=sigma)
-            applied = True
+            sigma = float(_get_aug_param(jitter_cfg, "sigma", 0.01))
+            out = add_jitter(
+                out,
+                sigma=sigma,
+                normalization_epsilon=normalization_epsilon,
+                hand_transitions=hand_transitions,
+                pose_transitions=pose_transitions,
+            )
+        if np.random.rand() < prob:
+            sigma = float(_get_aug_param(jitter_cfg, "sigma", 0.01))
+            out = add_jitter(
+                out, sigma=sigma, normalization_epsilon=normalization_epsilon
+            )
 
-    # 6. Time Stretch (must fail if enabled with positive prob and stretch)
-    if _get_aug_param(stretch_cfg, "enabled", False):
-        prob = float(_get_aug_param(stretch_cfg, "prob", 0.5))
-        max_stretch = float(_get_aug_param(stretch_cfg, "max_stretch", 0.2))
-        if prob > 0.0 and max_stretch > 0.0:
-            time_stretch(out, max_stretch=max_stretch)
-            applied = True
+    # Enforce torso_xy wrist z invariant at shared boundary
+    T, D = out.shape
+    if D >= 143:
+        layout = infer_feature_layout_from_dim(D)
+        if layout and layout.wrist_reference == "torso_xy":
+            out[:, [128, 131]] = 0.0
 
-    # Final defensive recomputation of derived features
-    if applied:
-        out = recompute_derived_features(out)
     return out
-
-
-def apply_random_augmentation(features: np.ndarray) -> np.ndarray:
-    """Default augmentation composition for backward compatibility."""
-    default_cfg = {
-        "flip": {"enabled": True, "prob": 0.5, "swap_hands": False},
-        "rotate": {"enabled": True, "prob": 0.5, "max_angle_deg": 8.0},
-        "shape_scale": {"enabled": True, "prob": 0.5, "r": 0.10},
-        "scale_translate": {"enabled": True, "prob": 0.7, "scale_min": 0.85, "scale_max": 1.15, "translate": 0.10},
-        "jitter": {"enabled": True, "prob": 0.5, "sigma": 0.01},
-        "time_stretch": {"enabled": False, "prob": 0.0, "max_stretch": 0.0},
-    }
-    return apply_augmentation(features, cfg=default_cfg)

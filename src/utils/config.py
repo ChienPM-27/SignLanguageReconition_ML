@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field, fields
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 import yaml
@@ -332,17 +333,43 @@ class PreprocessConfig:
             raise ValueError("preprocess.sequence_length must be an integer >= 4.")
         if type(self.num_workers) is bool or not isinstance(self.num_workers, int) or self.num_workers < 1:
             raise ValueError("preprocess.num_workers must be an integer >= 1.")
-        if type(self.normalization_epsilon) is bool or not isinstance(self.normalization_epsilon, (int, float)) or self.normalization_epsilon <= 0:
+        if type(self.normalization_epsilon) is bool or not isinstance(self.normalization_epsilon, (int, float)) or not math.isfinite(self.normalization_epsilon) or self.normalization_epsilon <= 0:
             raise ValueError("preprocess.normalization_epsilon must be a positive float.")
+
+
+ALLOWED_WRIST_REFERENCES = frozenset({"image", "torso_xy"})
+ALLOWED_PALM_SCALES = frozenset({"frame", "clip_median"})
 
 
 @dataclass
 class FeaturesConfig:
     set: str = "hands"
+    wrist_reference: str = "image"
+    palm_scale: str = "frame"
+    fingertip_displacement: bool = False
+    bend_cosines: bool = False
 
     def validate(self) -> None:
         if self.set not in {"hands", "hands_pose"}:
             raise ValueError(f"Invalid features.set '{self.set}'. Allowed: ['hands', 'hands_pose'].")
+        if self.wrist_reference not in ALLOWED_WRIST_REFERENCES:
+            raise ValueError(
+                f"Invalid features.wrist_reference '{self.wrist_reference}'. Allowed: {sorted(ALLOWED_WRIST_REFERENCES)}."
+            )
+        if self.wrist_reference == "torso_xy" and self.set != "hands_pose":
+            raise ValueError("features.wrist_reference='torso_xy' requires features.set='hands_pose'.")
+        if self.palm_scale not in ALLOWED_PALM_SCALES:
+            raise ValueError(
+                f"Invalid features.palm_scale '{self.palm_scale}'. Allowed: {sorted(ALLOWED_PALM_SCALES)}."
+            )
+        if not isinstance(self.fingertip_displacement, bool):
+            raise TypeError(
+                f"features.fingertip_displacement must be a boolean, got {type(self.fingertip_displacement).__name__}."
+            )
+        if not isinstance(self.bend_cosines, bool):
+            raise TypeError(
+                f"features.bend_cosines must be a boolean, got {type(self.bend_cosines).__name__}."
+            )
 
 
 @dataclass
@@ -354,6 +381,7 @@ class SplitConfig:
     n_folds: int = 5
     seed: int = 42
     min_per_gloss_per_split: int = 1
+    manifest_path: Optional[str] = None
 
     def validate(self) -> None:
         if self.method not in {"participant_holdout", "group_kfold"}:
@@ -367,6 +395,9 @@ class SplitConfig:
             raise ValueError("split.seed must be an integer >= 0.")
         if type(self.min_per_gloss_per_split) is bool or not isinstance(self.min_per_gloss_per_split, int) or self.min_per_gloss_per_split < 0:
             raise ValueError("split.min_per_gloss_per_split must be an integer >= 0.")
+        if self.manifest_path is not None:
+            if not isinstance(self.manifest_path, str) or not self.manifest_path.strip():
+                raise ValueError("split.manifest_path must be None or a non-empty string.")
 
 
 @dataclass
@@ -505,6 +536,15 @@ class RunConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    evaluate_test: bool = False
+
+    def validate(self) -> None:
+        if not isinstance(self.evaluate_test, bool):
+            raise TypeError("evaluation.evaluate_test must be a boolean.")
+
+
+@dataclass
 class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -518,6 +558,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     run: RunConfig = field(default_factory=RunConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
     def validate(self) -> None:
         self.env.validate()
@@ -532,6 +573,7 @@ class Config:
         self.model.validate()
         self.training.validate()
         self.run.validate()
+        self.evaluation.validate()
         if self.eda.num_landmark_probe_files > self.data.sample_budget_total_files:
             raise ValueError(
                 f"eda.num_landmark_probe_files ({self.eda.num_landmark_probe_files}) "
@@ -542,6 +584,12 @@ class Config:
             raise ValueError(
                 "Conflicting configuration: augmentation.flip.swap_hands cannot be True when "
                 "preprocess.dominant_hand is enabled. Slot 0 must retain its documented meaning."
+            )
+        if self.features.wrist_reference == "torso_xy" and self.augmentation.scale_translate.get("enabled", False):
+            raise ValueError(
+                "Conflicting configuration: augmentation.scale_translate cannot be enabled when "
+                "features.wrist_reference='torso_xy'. Wrist-only image scale/translation is incompatible "
+                "with torso-relative coordinates."
             )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -561,6 +609,7 @@ _SECTION_CLASSES = {
     "model": ModelConfig,
     "training": TrainingConfig,
     "run": RunConfig,
+    "evaluation": EvaluationConfig,
 }
 
 
@@ -694,6 +743,13 @@ def _build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:
     config = Config(**sections)
     config.validate()
     return config
+
+
+def apply_overrides(cfg_dict: Dict[str, Any], overrides: Sequence[str]) -> Dict[str, Any]:
+    """Apply a sequence of key.path=val overrides to a raw configuration dictionary."""
+    for override in overrides:
+        _apply_override(cfg_dict, override)
+    return cfg_dict
 
 
 def build_config_from_dict(raw_dict: Dict[str, Any]) -> Config:

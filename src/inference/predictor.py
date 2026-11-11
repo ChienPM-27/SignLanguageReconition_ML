@@ -66,6 +66,7 @@ class ISLRPredictor:
         self.gloss_to_label: Dict[str, int] = {}
         self._load_gloss_mapping(self.glosses_csv)
         self.num_classes = len(self.label_to_gloss)
+        self.class_names: List[str] = [self.label_to_gloss[i] for i in range(self.num_classes)]
 
         # 2. State attributes
         self.input_size = 143
@@ -156,85 +157,160 @@ class ISLRPredictor:
         schema_version = raw_ckpt.get("schema_version")
         preprocess_identity = raw_ckpt.get("preprocess_identity")
 
+        # Validate checkpoint classes and label map if present
+        ckpt_classes = raw_ckpt.get("class_names") or raw_ckpt.get("classes")
+        ckpt_label_map = raw_ckpt.get("label_map")
+
+        if ckpt_label_map is not None and isinstance(ckpt_label_map, dict):
+            indices = list(ckpt_label_map.values())
+            if len(set(indices)) != len(indices):
+                raise ValueError(f"Duplicate label indices detected in checkpoint label_map: {ckpt_label_map}")
+            expected_indices = set(range(len(indices)))
+            if set(indices) != expected_indices:
+                raise ValueError(
+                    f"Non-contiguous label indices in checkpoint label_map: expected {expected_indices}, got {set(indices)}"
+                )
+            if self.gloss_to_label:
+                # Validate consistency with initialized labels
+                for g, lbl in ckpt_label_map.items():
+                    if g in self.gloss_to_label and self.gloss_to_label[g] != lbl:
+                        raise ValueError(
+                            f"Label mismatch for gloss '{g}': checkpoint maps to {lbl}, "
+                            f"runtime maps to {self.gloss_to_label[g]}."
+                        )
+
+        if ckpt_classes is not None and isinstance(ckpt_classes, list):
+            if len(set(ckpt_classes)) != len(ckpt_classes):
+                raise ValueError(f"Duplicate class names in checkpoint classes: {ckpt_classes}")
+            if self.class_names is not None and len(self.class_names) > 0:
+                if list(self.class_names) != list(ckpt_classes):
+                    raise ValueError(
+                        f"Class mismatch between runtime glosses and checkpoint classes: "
+                        f"runtime={self.class_names}, checkpoint={ckpt_classes}"
+                    )
+
         if resolved_cfg_dict is not None and isinstance(resolved_cfg_dict, dict):
+            if schema_version != PREPROCESS_SCHEMA_VERSION:
+                raise ValueError(
+                    f"Unsupported checkpoint schema_version: expected {PREPROCESS_SCHEMA_VERSION}, got {schema_version}."
+                )
+            if not preprocess_identity:
+                raise ValueError("Checkpoint is missing required 'preprocess_identity'.")
+
             self.cfg = build_config_from_dict(resolved_cfg_dict)
-            self.schema_version = schema_version if schema_version is not None else PREPROCESS_SCHEMA_VERSION
+            from src.features.schema import compute_preprocess_identity
+            recomputed_id, _ = compute_preprocess_identity(self.cfg)
+            if preprocess_identity != recomputed_id:
+                raise ValueError(
+                    f"Checkpoint preprocess_identity '{preprocess_identity}' does not match "
+                    f"recomputed config identity '{recomputed_id}'."
+                )
+            self.schema_version = schema_version
             self.preprocess_identity = preprocess_identity
             self.is_legacy = False
+
+            # Canonical model instantiation from validated config
+            self.input_size = get_feature_dim(self.cfg)
+            self.hidden_size = self.cfg.model.hidden_size
+            self.num_layers = self.cfg.model.num_layers
+            self.dropout = self.cfg.model.dropout
+            self.bidirectional = self.cfg.model.bidirectional
+            self.pooling = self.cfg.model.pooling
+            self.rnn_type = self.cfg.model.name
+
+            self.model = ASLGRUClassifier(
+                input_size=self.input_size,
+                hidden_size=self.hidden_size,
+                num_layers=self.num_layers,
+                num_classes=self.num_classes,
+                dropout=self.dropout,
+                bidirectional=self.bidirectional,
+                pooling=self.pooling,
+                rnn_type=self.rnn_type,
+            )
         else:
+            if schema_version is not None and schema_version != PREPROCESS_SCHEMA_VERSION:
+                raise ValueError(
+                    f"Unsupported checkpoint schema_version: expected {PREPROCESS_SCHEMA_VERSION}, got {schema_version}."
+                )
             self.cfg = None
             self.schema_version = None
             self.preprocess_identity = None
             self.is_legacy = True
 
-        # Infer dimensions from state_dict
-        input_size = 143
-        hidden_size = 128
-        num_layers = 2
-        bidirectional = False
-        rnn_type = "GRU"
-
-        rnn_prefix = "gru"
-        if "lstm.weight_ih_l0" in state_dict:
-            rnn_prefix = "lstm"
-            rnn_type = "LSTM"
-        elif "gru.weight_ih_l0" in state_dict:
-            rnn_prefix = "gru"
+            # Legacy inference: Infer dimensions from state_dict
+            input_size = 143
+            hidden_size = 128
+            num_layers = 2
+            bidirectional = False
             rnn_type = "GRU"
-        elif "rnn.weight_ih_l0" in state_dict:
-            rnn_prefix = "rnn"
 
-        weight_ih = state_dict.get(f"{rnn_prefix}.weight_ih_l0")
-        if weight_ih is not None:
-            input_size = weight_ih.shape[1]
+            rnn_prefix = "gru"
+            if "lstm.weight_ih_l0" in state_dict:
+                rnn_prefix = "lstm"
+                rnn_type = "LSTM"
+            elif "gru.weight_ih_l0" in state_dict:
+                rnn_prefix = "gru"
+                rnn_type = "GRU"
+            elif "rnn.weight_ih_l0" in state_dict:
+                rnn_prefix = "rnn"
 
-        weight_hh = state_dict.get(f"{rnn_prefix}.weight_hh_l0")
-        if weight_hh is not None:
-            hidden_size = weight_hh.shape[1]
+            weight_ih = state_dict.get(f"{rnn_prefix}.weight_ih_l0")
+            if weight_ih is not None:
+                input_size = weight_ih.shape[1]
 
-        if f"{rnn_prefix}.weight_ih_l0_reverse" in state_dict:
-            bidirectional = True
+            weight_hh = state_dict.get(f"{rnn_prefix}.weight_hh_l0")
+            if weight_hh is not None:
+                hidden_size = weight_hh.shape[1]
 
-        layer_indices = [
-            int(k.split("_l")[1].split("_")[0])
-            for k in state_dict.keys()
-            if f"{rnn_prefix}.weight_hh_l" in k and "_reverse" not in k
-        ]
-        if layer_indices:
-            num_layers = max(layer_indices) + 1
+            if f"{rnn_prefix}.weight_ih_l0_reverse" in state_dict:
+                bidirectional = True
 
-        direction_factor = 2 if bidirectional else 1
-        fc_in = state_dict["fc.weight"].shape[1] if "fc.weight" in state_dict else hidden_size * direction_factor
-        if fc_in == hidden_size * direction_factor * 2:
-            pooling = "mean_max"
-        elif "attn_pool.attn.0.weight" in state_dict:
-            pooling = "attention"
-        else:
-            pooling = "last"
+            layer_indices = [
+                int(k.split("_l")[1].split("_")[0])
+                for k in state_dict.keys()
+                if f"{rnn_prefix}.weight_hh_l" in k and "_reverse" not in k
+            ]
+            if layer_indices:
+                num_layers = max(layer_indices) + 1
 
-        self.input_size = input_size
-        self.pooling = pooling
-        self.rnn_type = rnn_type
+            direction_factor = 2 if bidirectional else 1
+            fc_in = state_dict["fc.weight"].shape[1] if "fc.weight" in state_dict else hidden_size * direction_factor
+            if fc_in == hidden_size * direction_factor * 2:
+                pooling = "mean_max"
+            elif "attn_pool.attn.0.weight" in state_dict:
+                pooling = "attention"
+            else:
+                pooling = "last"
 
-        # Validate checkpoint configuration dimensions if resolved_config is present
-        if self.cfg is not None:
-            expected_dim = get_feature_dim(self.cfg.features.set)
-            if expected_dim != self.input_size:
+            self.input_size = input_size
+            self.pooling = pooling
+            self.rnn_type = rnn_type
+            self.model = ASLGRUClassifier(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                num_layers=num_layers,
+                num_classes=self.num_classes,
+                dropout=0.3,
+                bidirectional=bidirectional,
+                pooling=pooling,
+                rnn_type=rnn_type,
+            )
+
+        # Validate state_dict shapes against model architecture
+        for k, v in self.model.state_dict().items():
+            if k not in state_dict:
+                raise ValueError(f"Checkpoint missing parameter '{k}' for model architecture.")
+            if state_dict[k].shape != v.shape:
+                if "weight_ih" in k and state_dict[k].shape[1] != v.shape[1]:
+                    raise ValueError(
+                        f"Checkpoint feature dimension mismatch: resolved_config features.set='{self.cfg.features.set if self.cfg else 'unknown'}' "
+                        f"expects {v.shape[1]} dims, but model input_size is {state_dict[k].shape[1]}."
+                    )
                 raise ValueError(
-                    f"Checkpoint feature dimension mismatch: resolved_config features.set='{self.cfg.features.set}' "
-                    f"expects {expected_dim} dims, but model input_size is {self.input_size}."
+                    f"Checkpoint parameter shape mismatch for '{k}': expected {v.shape}, got {state_dict[k].shape}."
                 )
 
-        self.model = ASLGRUClassifier(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            num_classes=self.num_classes,
-            dropout=0.3,
-            bidirectional=bidirectional,
-            pooling=pooling,
-            rnn_type=rnn_type,
-        )
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
@@ -302,16 +378,23 @@ class ISLRPredictor:
         top_k: int = 3,
     ) -> PredictionResult:
         """Process raw coordinates through canonical preprocessing to prediction."""
-        if self.cfg is None:
+        if self.is_legacy or self.cfg is None:
             raise ValueError(
                 "Model checkpoint lacks resolved preprocessing configuration (legacy checkpoint). "
-                "Raw coordinate inference requires retraining with corrected preprocessing schema version 2. "
+                "Raw coordinate inference requires retraining with canonical schema. "
                 "Only precomputed feature inference (predict_features) is supported for legacy checkpoints."
             )
 
         if pose_coords is None and stats and "pose_coords" in stats:
             pose_coords = stats["pose_coords"]
             pose_masks = stats.get("pose_masks")
+
+        if getattr(self.cfg.features, "wrist_reference", "image") == "torso_xy":
+            if pose_coords is None or (isinstance(pose_coords, np.ndarray) and len(pose_coords) == 0):
+                raise ValueError(
+                    "Checkpoint was trained with wrist_reference='torso_xy', which strictly "
+                    "requires torso pose landmarks (shoulders/elbows). No pose coordinates were provided."
+                )
 
         result = prepare_landmark_sequence(
             raw_coords=raw_coords,

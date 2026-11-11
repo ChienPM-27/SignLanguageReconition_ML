@@ -31,12 +31,17 @@ tests/test_dataset_eda.py
 
 # Subagents workspace
 .agents/
+.review-wave-*/
 
 # Generated reports & outputs (git-ignored except .gitkeep)
 reports/*
 !reports/.gitkeep
 !reports/training_fix_notes.md
 !reports/p0_*.md
+!reports/ablation-study/
+!reports/ablation-study/**
+!reports/astra_*.md
+!reports/gemini_astra_handoff_prompt.md
 outputs/*
 !outputs/.gitkeep
 
@@ -46,3 +51,5 @@ data/cache/
 
 # Graphify
 graphify-out/cache/
+.review-wave-a/
+.review-wave-a-tmp/

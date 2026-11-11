@@ -43,7 +43,7 @@ def _create_mock_model_and_glosses(
 
     if save_resolved_config:
         feature_set = "hands_pose" if input_size >= 160 else "hands"
-        cfg_dict = custom_cfg or {
+        cfg_dict = {
             "features": {"set": feature_set},
             "preprocess": {
                 "sequence_length": sequence_length,
@@ -53,7 +53,21 @@ def _create_mock_model_and_glosses(
                 "dominant_hand": True,
                 "normalization_epsilon": 0.0001,
             },
+            "model": {
+                "name": rnn_type,
+                "hidden_size": 32,
+                "num_layers": 1,
+                "dropout": 0.0,
+                "pooling": pooling,
+                "bidirectional": False,
+            },
         }
+        if custom_cfg:
+            for sec, vals in custom_cfg.items():
+                if sec in cfg_dict and isinstance(vals, dict):
+                    cfg_dict[sec].update(vals)
+                else:
+                    cfg_dict[sec] = vals
         from src.features.schema import compute_preprocess_identity
         from src.utils.config import build_config_from_dict
 
@@ -275,3 +289,41 @@ def test_predictor_with_explicit_config_matching_and_mismatch(tmp_path: Path) ->
     with pytest.raises(ValueError, match="Explicit config identity .* does not match checkpoint preprocess_identity"):
         ISLRPredictor(model_path=model_pt, glosses_csv=glosses_csv, device="cpu", cfg=mismatched_cfg)
 
+
+def test_predictor_rejects_invalid_checkpoint_classes(tmp_path: Path) -> None:
+    """Ensure predictor fails loudly if checkpoint contains non-contiguous or duplicate label mappings."""
+    model_pt, glosses_csv = _create_mock_model_and_glosses(tmp_path, input_size=143)
+    ckpt = torch.load(str(model_pt), weights_only=False)
+
+    # 1. Non-contiguous label indices [0, 2] instead of [0, 1]
+    bad_ckpt_p = tmp_path / "bad_labels.pt"
+    ckpt["label_map"] = {"hello": 0, "world": 2}
+    torch.save(ckpt, str(bad_ckpt_p))
+    with pytest.raises(ValueError, match="Non-contiguous label indices"):
+        ISLRPredictor(model_path=bad_ckpt_p, glosses_csv=glosses_csv, device="cpu")
+
+    # 2. Duplicate label indices
+    bad_ckpt_p2 = tmp_path / "dup_labels.pt"
+    ckpt["label_map"] = {"hello": 0, "world": 0}
+    torch.save(ckpt, str(bad_ckpt_p2))
+    with pytest.raises(ValueError, match="Duplicate label indices"):
+        ISLRPredictor(model_path=bad_ckpt_p2, glosses_csv=glosses_csv, device="cpu")
+
+
+def test_predictor_rejects_raw_inference_on_legacy_checkpoint(tmp_path: Path) -> None:
+    """Ensure legacy raw state_dict checkpoints are rejected for raw coordinates or video inference."""
+    model_pt, glosses_csv = _create_mock_model_and_glosses(tmp_path, input_size=143, save_resolved_config=False)
+    predictor = ISLRPredictor(model_path=model_pt, glosses_csv=glosses_csv, device="cpu")
+    assert predictor.is_legacy is True
+
+    # Precomputed features work for legacy checkpoints
+    dummy_feats = np.random.randn(32, 143).astype(np.float32)
+    res = predictor.predict_features(dummy_feats)
+    assert res.predicted_gloss in {"hello", "world"}
+
+    # Raw coordinates inference must fail loudly
+    dummy_raw = np.random.randn(20, 2, 21, 3).astype(np.float32)
+    dummy_masks = np.ones((20, 2), dtype=bool)
+    with pytest.raises(ValueError, match="legacy checkpoint"):
+        predictor.predict_raw_coordinates(dummy_raw, dummy_masks)
+    predictor.close()

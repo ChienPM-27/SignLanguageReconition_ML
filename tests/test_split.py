@@ -174,3 +174,51 @@ def test_cli_prepare_data_all_stages(tmp_path: Path) -> None:
     assert (splits_dir / "val.csv").is_file()
     assert (splits_dir / "test.csv").is_file()
     assert (tmp_path / "reports" / "split_report.md").is_file()
+
+
+def test_frozen_split_manifest_and_rebind(tmp_path: Path) -> None:
+    """Verify split_manifest.json creation, rebind by manifest_path, and class coverage enforcement."""
+    import pytest
+
+    cache_dir = tmp_path / "cache"
+    _populate_features_manifest(cache_dir, n_glosses=4, n_signers=6)
+
+    overrides = [
+        f"env.local_root={tmp_path}",
+        f"data.cache_dir={cache_dir}",
+        f"output.report_dir={tmp_path / 'reports'}",
+        "split.method=participant_holdout",
+        "split.n_train=0.6",
+        "split.n_val=0.2",
+        "split.n_test=0.2",
+        "split.seed=42",
+        "split.min_per_gloss_per_split=1",
+    ]
+    cfg = load_config(overrides=overrides)
+    paths = resolve_paths(ENV_LOCAL, cfg, create_dirs=True)
+
+    # 1. Initial split creates split_manifest.json
+    split_files, _ = create_signer_splits(cfg=cfg, paths=paths)
+    manifest_p = split_files.get("manifest")
+    assert manifest_p is not None and manifest_p.is_file()
+
+    with open(manifest_p, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["split_method"] == "participant_holdout"
+    assert "splits" in meta
+    assert len(meta["splits"]["train"]["sequence_ids"]) > 0
+
+    # 2. Rebind with frozen manifest_path succeeds and preserves membership
+    rebind_overrides = overrides + [f"split.manifest_path={manifest_p}"]
+    cfg_rebind = load_config(overrides=rebind_overrides)
+    split_files_rebind, _ = create_signer_splits(cfg=cfg_rebind, paths=paths)
+
+    with open(split_files_rebind["train"], "r", encoding="utf-8") as f:
+        rebound_train_seqs = [r["sequence_id"] for r in csv.DictReader(f)]
+    assert rebound_train_seqs == meta["splits"]["train"]["sequence_ids"]
+
+    # 3. Class coverage violation during rebind raises ValueError without seed hunting
+    strict_overrides = rebind_overrides + ["split.min_per_gloss_per_split=999"]
+    cfg_strict = load_config(overrides=strict_overrides)
+    with pytest.raises(ValueError, match="Class coverage violation in frozen split rebind"):
+        create_signer_splits(cfg=cfg_strict, paths=paths)

@@ -83,6 +83,15 @@ class DeviceDataLoader:
             batch_y = labels[batch_indices]
 
             if self.augment and self.augmentation_fn is not None:
-                batch_x = self.augmentation_fn(batch_x, self.augmentation_config, self.generator)
+                norm_eps = getattr(self.dataset, "normalization_epsilon", 1e-4)
+                try:
+                    batch_x = self.augmentation_fn(
+                        batch_x,
+                        self.augmentation_config,
+                        self.generator,
+                        normalization_epsilon=norm_eps,
+                    )
+                except TypeError:
+                    batch_x = self.augmentation_fn(batch_x, self.augmentation_config, self.generator)
 
             yield batch_x, batch_y

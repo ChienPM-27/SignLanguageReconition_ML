@@ -402,6 +402,15 @@ def _setup_smoke_train_env(tmp_path: Path, n_samples: int = 8, n_classes: int = 
     write_csv(train_csv, n_samples)
     write_csv(val_csv, max(4, n_samples // 2))
 
+    from src.features.schema import compute_preprocess_identity
+    from src.utils.config import load_config
+    cfg = load_config()
+    cfg.features.set = "hands"
+    identity, params = compute_preprocess_identity(cfg)
+    import json
+    with open(feat_dir / "preprocess_meta.json", "w", encoding="utf-8") as f:
+        json.dump({"config_hash": identity, "parameters": params}, f)
+
     return train_csv, val_csv
 
 
