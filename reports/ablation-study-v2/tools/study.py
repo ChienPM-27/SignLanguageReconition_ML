@@ -55,6 +55,7 @@ def source_manifest() -> dict:
     files = {REPO / "requirements.txt"}
     for folder in ("src", "scripts", "configs", "tests", "reports/ablation-study-v2/tools"):
         files.update(p for p in (REPO / folder).rglob("*") if p.is_file() and p.suffix in (".py", ".yaml"))
+    files.update((REPO / "notebooks").glob("ablation_v2_member_*.ipynb"))
     return {p.relative_to(REPO).as_posix(): hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
             for p in sorted(files)}
 

@@ -11,6 +11,9 @@ Mỗi member chạy folder của mình; không thay source/config trong campaign
 | C | `codex/ablation-member-c` | [member-c](member-c/README.md) | 22 | 66 |
 
 Mỗi YAML là một tổ hợp, chạy cả seeds42/43/44. `run.name` là run ID canonical.
+
+Cách chạy thuận tiện nhất: dùng [3 notebook V2 tạo sẵn](../../notebooks/ABLATION_V2_README.md).
+Notebook đọc queue, chuẩn bị runtime config và giữ result folder/ZIP riêng cho từng member.
 Các configs là snapshot sinh từ `configs/islr.yaml` và ma trận `study.py`;
 không thêm config aliases hay tự đổi hyperparameter giữa các members.
 `QUEUE.json` liệt kê tất cả configs theo phân công; các tổ hợp độc lập.

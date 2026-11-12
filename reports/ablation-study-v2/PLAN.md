@@ -193,6 +193,13 @@ khi mở test và evaluate cùng cohort; kết quả chỉ để báo cáo, khô
 
 Tools chạy từ repo root; dùng Python của runtime đã cài dependencies.
 
+Ba notebook `notebooks/ablation_v2_member_a.ipynb`, `ablation_v2_member_b.ipynb`,
+`ablation_v2_member_c.ipynb` là entrypoints cho Kaggle/Colab. Source pin bằng tag
+`ablation-v2-notebooks-v1`; dùng shared package freeze từ snapshot notebook mới.
+Hướng dẫn setup, prepare, queue/restore và folder kết quả:
+`notebooks/ABLATION_V2_README.md`. Notebook A chỉ prepare khi MODE=prepare;
+A/B/C cùng MODE=train sau khi đã nhận shared ZIP. Test metrics không mở ở notebook.
+
 Ba branch `codex/ablation-member-a`, `codex/ablation-member-b`,
 `codex/ablation-member-c` cùng chứa source v5 và đủ 60 configs chia theo owner
 trong `configs/ablation-study-v2/member-a`, `member-b`, `member-c`.
@@ -254,6 +261,15 @@ inputs, effective_config, metadata, logs, cache_audit, split_snapshot, runs và 
 Cache thật ở persistent_root/ablation_v2_cache, định danh theo source và feature
 identity, dùng lại giữa các model trên cùng runtime. ZIP chứa audit/model/log,
 không kèm toàn bộ raw/cache data; cache lớn không cần gửi lại cho mỗi cell.
+
+Notebook giữ bản nghiệm thu riêng tại
+`persistent_root/ablation_v2_results/member-<a|b|c>/<code-id>/runs/<run-id>/<attempt>`.
+`queue_status.json` lưu selected paths tương đối để restore sang runtime khác;
+metadata/configs/logs/checkpoints/predictions được giữ nguyên. Per-run ZIPs ở
+`bundles`; member result ZIP loại cache/probe data và các per-run ZIP trùng nội dung.
+Tổ hợp hoàn tất chỉ được skip sau artifact validation; failed attempts giữ riêng.
+Notebook A tổng hợp ZIP của B/C bằng selected paths, không truyền toàn bộ folder
+có cả retry histories vào summarizer.
 Standalone evaluation dùng config trong checkpoint. Nếu chuyển sang runtime
 khác, regenerate cache của đúng feature và rebind common split trước; cho
 phép override đường dẫn runtime, không override model/feature semantics.

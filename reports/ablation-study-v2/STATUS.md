@@ -14,11 +14,15 @@ Implementation đã có:
 - 60 canonical configs chia folder A/B/C, queues và hướng dẫn branch.
 - `run-config` đọc YAML thực tế, kiểm tra protocol/source/cohort, giữ planned config
   và hash trong attempt/ZIP; Colab Drive project roots tách theo member.
+- 3 notebook V2 Kaggle/Colab pin tag `ablation-v2-notebooks-v1`, common workflow
+  prepare/shared/raw preflight, queue skip/retry/restore và cross-member aggregation.
+- Result folder tách theo member/source/run/attempt; per-run ZIP và member ZIP
+  giữ đủ artifacts, bỏ caches/raw/probes và không lặp lại ZIPs đã chứa cùng nội dung.
 
 Kết quả kiểm tra source hiện tại:
 
 ```text
-273 passed, 1 warning
+282 passed, 1 warning
 ```
 
 Đã chạy toàn bộ `tests` khi import hook chủ động chặn optional clients `kaggle`
@@ -51,6 +55,10 @@ Tests mới kiểm tra:
 - `run-config` từ chối drift feature/training/env.seed trước khi chạm runtime;
   propagate Face/Transformer/mirror config và bind frozen split; archive planned
   config được summarizer kiểm tra hash.
+- Notebook nbformat/Python syntax và defaults cho A/B/C được kiểm tra; shared
+  validation, raw mounted-data bypass, 5 preprocess probes giữ signer/vocab,
+  completed skip, relocated restore, technical retry/history, safe ZIP paths và
+  aggregate selected attempts đã kiểm tra bằng fixtures tự tạo.
 
 Trạng thái training:
 
@@ -59,6 +67,8 @@ Trạng thái training:
   khi có năm cache probes và frozen signer split theo PLAN.md.
 - **Chưa smoke MediaPipe video inference với video/model assets thật.** Feature
   parity đã kiểm tra trên raw landmarks; cần smoke trước khi chứng nhận demo.
+- **Chưa chạy notebook thực trên Kaggle/Colab GPU.** Notebook/source/workflow
+  được kiểm tra offline; cần preflight GPU baseline trước campaign dài.
 - Source v5 và bộ configs A/B/C được đóng gói chung cho các branch
   `codex/ablation-member-a`, `codex/ablation-member-b`, `codex/ablation-member-c`.
   `study.py freeze` tạo content manifest để khóa phiên bản trước training;
