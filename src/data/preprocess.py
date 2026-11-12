@@ -177,6 +177,7 @@ def preprocess_single_sequence(
     lh_raw = raw_landmarks[:, LH_OFFSET : LH_OFFSET + LH_COUNT, :]  # (T_raw, 21, 3)
     rh_raw = raw_landmarks[:, RH_OFFSET : RH_OFFSET + RH_COUNT, :]  # (T_raw, 21, 3)
     pose_raw = raw_landmarks[:, POSE_OFFSET : POSE_OFFSET + POSE_COUNT, :]  # (T_raw, 33, 3)
+    face_raw = raw_landmarks[:, FACE_OFFSET : FACE_OFFSET + FACE_COUNT, :] if cfg.features.face else None
 
     lh_mask = ~np.isnan(lh_raw[:, 0, 0])
     rh_mask = ~np.isnan(rh_raw[:, 0, 0])
@@ -189,6 +190,7 @@ def preprocess_single_sequence(
         rh_mask=rh_mask,
         pose_coords=pose_raw,
         pose_mask=pose_mask,
+        face_coords=face_raw,
         cfg=cfg,
     )
 

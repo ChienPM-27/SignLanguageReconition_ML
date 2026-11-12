@@ -1,4 +1,4 @@
-"""Schema-v4 reliability metadata. Feature values never imply continuity."""
+"""Schema-v5 reliability metadata. Feature values never imply continuity."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,7 +18,11 @@ MASK_WIDTHS = {
 
 def validate_validity(metadata: dict[str, Any], features: np.ndarray) -> None:
     t, d = features.shape
-    for name, width in MASK_WIDTHS.items():
+    layout = infer_feature_layout_from_dim(d)
+    widths = dict(MASK_WIDTHS)
+    if layout.face:
+        widths.update(observed_face=1, usable_face=1)
+    for name, width in widths.items():
         arr = metadata.get(name)
         if not isinstance(arr, np.ndarray) or arr.dtype != np.bool_ or arr.shape != (t, width):
             raise ValueError(f"Invalid validity mask {name}: expected bool ({t}, {width}).")
@@ -28,11 +32,14 @@ def validate_validity(metadata: dict[str, Any], features: np.ndarray) -> None:
     valid = metadata["valid_timesteps"]
     if not valid.all():
         raise ValueError("Fixed-resampled cache must contain real timesteps, not padding.")
-    layout = infer_feature_layout_from_dim(d)
     if not np.array_equal(metadata["usable_hands"], features[:, layout.slice_hand_masks]):
         raise ValueError("Validity hand support disagrees with feature channels.")
     if layout.has_pose and not np.array_equal(metadata["usable_pose"], features[:, layout.slice_pose_mask]):
         raise ValueError("Validity pose support disagrees with feature channels.")
+    if layout.face and not np.array_equal(metadata["usable_face"], features[:, layout.slice_face_mask]):
+        raise ValueError("Validity face support disagrees with feature channels.")
+    if layout.face and np.any(metadata["observed_face"] & ~metadata["usable_face"]):
+        raise ValueError("Observed face support must be a subset of usable support.")
     for part in ("hands", "pose"):
         usable = metadata[f"usable_{part}"]
         if np.any(metadata[f"observed_{part}"] & ~usable):
@@ -46,6 +53,8 @@ def save_validity(npy_path: str | Path, metadata: dict[str, Any], features: np.n
                   preprocess_identity: str, sequence_id: str, source_hash: str) -> None:
     validate_validity(metadata, features)
     payload = {key: metadata[key] for key in MASK_WIDTHS}
+    if infer_feature_layout_from_dim(features.shape[1]).face:
+        payload.update(observed_face=metadata["observed_face"], usable_face=metadata["usable_face"])
     payload.update(
         slot_to_anatomical=np.asarray(metadata["slot_to_anatomical"]),
         schema_version=np.asarray(PREPROCESS_SCHEMA_VERSION),
@@ -61,7 +70,7 @@ def load_validity(npy_path: str | Path, features: np.ndarray,
                   preprocess_identity: str, sequence_id: str) -> dict[str, Any]:
     path = Path(npy_path).with_suffix(".validity.npz")
     if not path.is_file():
-        raise FileNotFoundError(f"Missing schema-v4 validity sidecar: {path}. Regenerate cache.")
+        raise FileNotFoundError(f"Missing schema-v{PREPROCESS_SCHEMA_VERSION} validity sidecar: {path}. Regenerate cache.")
     with np.load(path, allow_pickle=False) as archive:
         metadata = {key: archive[key] for key in archive.files}
     for key, expected in {

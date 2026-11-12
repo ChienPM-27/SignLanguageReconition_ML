@@ -29,6 +29,7 @@ from src.features.schema import (
     FeatureLayout,
     get_feature_dim,
 )
+from src.features.face import prepare_face_sequence
 
 
 @dataclass
@@ -70,6 +71,9 @@ def prepare_landmark_sequence(
     raw_coords: Optional[np.ndarray] = None,
     hand_masks: Optional[np.ndarray] = None,
     pose_masks: Optional[np.ndarray] = None,
+    face_coords: Optional[np.ndarray] = None,
+    face_mask: Optional[np.ndarray] = None,
+    face: bool = False,
 ) -> PreprocessResult:
     """Execute end-to-end landmark preprocessing according to canonical contract.
 
@@ -108,12 +112,14 @@ def prepare_landmark_sequence(
         palm_scale = str(getattr(feat, "palm_scale", palm_scale))
         fingertip_displacement = bool(getattr(feat, "fingertip_displacement", fingertip_displacement))
         bend_cosines = bool(getattr(feat, "bend_cosines", bend_cosines))
+        face = bool(getattr(feat, "face", face))
 
     target_dim = get_feature_dim(
         feature_set=feature_set,
         wrist_reference=wrist_reference,
         fingertip_displacement=fingertip_displacement,
         bend_cosines=bend_cosines,
+        face=face,
     )
 
     if lh_coords is None or rh_coords is None or len(lh_coords) == 0 or len(rh_coords) != len(lh_coords):
@@ -265,6 +271,7 @@ def prepare_landmark_sequence(
                 palm_scale=palm_scale,
                 fingertip_displacement=fingertip_displacement,
                 bend_cosines=bend_cosines,
+                face=face,
             )
             return PreprocessResult(
                 features=np.zeros((sequence_length, layout.total_dim), dtype=np.float32),
@@ -347,6 +354,13 @@ def prepare_landmark_sequence(
         hand_transitions=hand_transitions,
         pose_transitions=pose_transitions,
     )
+    face_observed = face_usable = np.zeros((sequence_length, 1), dtype=bool)
+    if face:
+        face_features, face_observed, face_usable = prepare_face_sequence(
+            face_coords, face_mask, T_raw, (start_t, end_t), sequence_length,
+            max_gap_frames, normalization_epsilon,
+        )
+        features = np.concatenate((features, face_features), axis=1)
 
     out_pose_mask = (
         resampled_pose_masks
@@ -398,6 +412,9 @@ def prepare_landmark_sequence(
             "observed_pose": resample_temporal(pose_clean, o_pose[:, None], sequence_length)[1],
             "usable_pose": out_pose_mask,
             "valid_timesteps": np.ones((sequence_length, 1), dtype=bool),
+            "observed_face": face_observed,
+            "usable_face": face_usable,
+            "target_face_coverage": float(face_usable.mean()),
             "target_hand_coverage": float(resampled_hand_masks.any(axis=1).mean()),
             "target_pose_coverage": float(out_pose_mask.mean()),
         },

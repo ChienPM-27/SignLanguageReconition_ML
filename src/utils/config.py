@@ -348,6 +348,7 @@ class FeaturesConfig:
     palm_scale: str = "frame"
     fingertip_displacement: bool = False
     bend_cosines: bool = False
+    face: bool = False
 
     def validate(self) -> None:
         if self.set not in {"hands", "hands_pose"}:
@@ -370,6 +371,8 @@ class FeaturesConfig:
             raise TypeError(
                 f"features.bend_cosines must be a boolean, got {type(self.bend_cosines).__name__}."
             )
+        if not isinstance(self.face, bool):
+            raise TypeError("features.face must be a boolean.")
 
 
 @dataclass
@@ -449,10 +452,12 @@ class ModelConfig:
     dropout: float = 0.3
     bidirectional: bool = False
     pooling: str = "mean_max"
+    attention_heads: int = 4
+    feedforward_size: int = 256
 
     def validate(self) -> None:
-        if not isinstance(self.name, str) or self.name.upper() not in ("GRU", "LSTM"):
-            raise ValueError(f"model.name must be 'GRU' or 'LSTM'. Got '{self.name}'.")
+        if not isinstance(self.name, str) or self.name.upper() not in ("GRU", "LSTM", "TRANSFORMER"):
+            raise ValueError(f"model.name must be 'GRU', 'LSTM' or 'Transformer'. Got '{self.name}'.")
         if type(self.hidden_size) is bool or not isinstance(self.hidden_size, int) or self.hidden_size < 8:
             raise ValueError("model.hidden_size must be an integer >= 8.")
         if type(self.num_layers) is bool or not isinstance(self.num_layers, int) or self.num_layers < 1:
@@ -463,6 +468,15 @@ class ModelConfig:
             raise TypeError("model.bidirectional must be a boolean.")
         if not isinstance(self.pooling, str) or self.pooling not in ("mean_max", "attention", "mean", "last"):
             raise ValueError(f"model.pooling must be one of: 'mean_max', 'attention', 'mean', 'last'. Got '{self.pooling}'.")
+        for key in ("attention_heads", "feedforward_size"):
+            value = getattr(self, key)
+            if type(value) is not int or value < 1:
+                raise ValueError(f"model.{key} must be a positive integer.")
+        if self.name.upper() == "TRANSFORMER":
+            if self.hidden_size % self.attention_heads or self.hidden_size % 2:
+                raise ValueError("Transformer model.hidden_size must be even and divisible by model.attention_heads.")
+            if self.bidirectional:
+                raise ValueError("model.bidirectional applies to GRU/LSTM; Transformer uses full-clip self-attention.")
 
 
 @dataclass

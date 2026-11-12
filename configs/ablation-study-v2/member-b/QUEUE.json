@@ -1,0 +1,392 @@
+[
+  {
+    "run_id": "G-mean__F0",
+    "profile": "G-mean",
+    "feature": "F0",
+    "owner": "B",
+    "dimension": 160,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F0.yaml"
+  },
+  {
+    "run_id": "G-mean__F0-face",
+    "profile": "G-mean",
+    "feature": "F0-face",
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F0-face.yaml"
+  },
+  {
+    "run_id": "G-mean__F1",
+    "profile": "G-mean",
+    "feature": "F1",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F1.yaml"
+  },
+  {
+    "run_id": "G-mean__F1-face",
+    "profile": "G-mean",
+    "feature": "F1-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F1-face.yaml"
+  },
+  {
+    "run_id": "G-mean__F2",
+    "profile": "G-mean",
+    "feature": "F2",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F2.yaml"
+  },
+  {
+    "run_id": "G-mean__F2-face",
+    "profile": "G-mean",
+    "feature": "F2-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F2-face.yaml"
+  },
+  {
+    "run_id": "G-mean__F3",
+    "profile": "G-mean",
+    "feature": "F3",
+    "owner": "B",
+    "dimension": 192,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F3.yaml"
+  },
+  {
+    "run_id": "G-mean__F3-face",
+    "profile": "G-mean",
+    "feature": "F3-face",
+    "owner": "B",
+    "dimension": 228,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F3-face.yaml"
+  },
+  {
+    "run_id": "G-mean__F4",
+    "profile": "G-mean",
+    "feature": "F4",
+    "owner": "B",
+    "dimension": 212,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F4.yaml"
+  },
+  {
+    "run_id": "G-mean__F4-face",
+    "profile": "G-mean",
+    "feature": "F4-face",
+    "owner": "B",
+    "dimension": 248,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-mean__F4-face.yaml"
+  },
+  {
+    "run_id": "G-attn__F0",
+    "profile": "G-attn",
+    "feature": "F0",
+    "owner": "B",
+    "dimension": 160,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F0.yaml"
+  },
+  {
+    "run_id": "G-attn__F0-face",
+    "profile": "G-attn",
+    "feature": "F0-face",
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F0-face.yaml"
+  },
+  {
+    "run_id": "G-attn__F1",
+    "profile": "G-attn",
+    "feature": "F1",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F1.yaml"
+  },
+  {
+    "run_id": "G-attn__F1-face",
+    "profile": "G-attn",
+    "feature": "F1-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F1-face.yaml"
+  },
+  {
+    "run_id": "G-attn__F2",
+    "profile": "G-attn",
+    "feature": "F2",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F2.yaml"
+  },
+  {
+    "run_id": "G-attn__F2-face",
+    "profile": "G-attn",
+    "feature": "F2-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F2-face.yaml"
+  },
+  {
+    "run_id": "G-attn__F3",
+    "profile": "G-attn",
+    "feature": "F3",
+    "owner": "B",
+    "dimension": 192,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F3.yaml"
+  },
+  {
+    "run_id": "G-attn__F3-face",
+    "profile": "G-attn",
+    "feature": "F3-face",
+    "owner": "B",
+    "dimension": 228,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F3-face.yaml"
+  },
+  {
+    "run_id": "G-attn__F4",
+    "profile": "G-attn",
+    "feature": "F4",
+    "owner": "B",
+    "dimension": 212,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F4.yaml"
+  },
+  {
+    "run_id": "G-attn__F4-face",
+    "profile": "G-attn",
+    "feature": "F4-face",
+    "owner": "B",
+    "dimension": 248,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-attn__F4-face.yaml"
+  },
+  {
+    "run_id": "G-bi__F0",
+    "profile": "G-bi",
+    "feature": "F0",
+    "owner": "B",
+    "dimension": 160,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F0.yaml"
+  },
+  {
+    "run_id": "G-bi__F0-face",
+    "profile": "G-bi",
+    "feature": "F0-face",
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F0-face.yaml"
+  },
+  {
+    "run_id": "G-bi__F1",
+    "profile": "G-bi",
+    "feature": "F1",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F1.yaml"
+  },
+  {
+    "run_id": "G-bi__F1-face",
+    "profile": "G-bi",
+    "feature": "F1-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F1-face.yaml"
+  },
+  {
+    "run_id": "G-bi__F2",
+    "profile": "G-bi",
+    "feature": "F2",
+    "owner": "B",
+    "dimension": 162,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F2.yaml"
+  },
+  {
+    "run_id": "G-bi__F2-face",
+    "profile": "G-bi",
+    "feature": "F2-face",
+    "owner": "B",
+    "dimension": 198,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F2-face.yaml"
+  },
+  {
+    "run_id": "G-bi__F3",
+    "profile": "G-bi",
+    "feature": "F3",
+    "owner": "B",
+    "dimension": 192,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F3.yaml"
+  },
+  {
+    "run_id": "G-bi__F3-face",
+    "profile": "G-bi",
+    "feature": "F3-face",
+    "owner": "B",
+    "dimension": 228,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F3-face.yaml"
+  },
+  {
+    "run_id": "G-bi__F4",
+    "profile": "G-bi",
+    "feature": "F4",
+    "owner": "B",
+    "dimension": 212,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F4.yaml"
+  },
+  {
+    "run_id": "G-bi__F4-face",
+    "profile": "G-bi",
+    "feature": "F4-face",
+    "owner": "B",
+    "dimension": 248,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "config": "G-bi__F4-face.yaml"
+  }
+]

@@ -14,8 +14,8 @@ import hashlib
 import json
 from typing import Any, Dict, Optional, Tuple
 
-# Version 4 binds reliability sidecars and repaired continuity/acceptance semantics.
-PREPROCESS_SCHEMA_VERSION: int = 4
+# Version 5 adds optional compact face channels and face reliability sidecars.
+PREPROCESS_SCHEMA_VERSION: int = 5
 
 # Supported feature sets
 FEATURE_SET_HANDS: str = "hands"
@@ -67,6 +67,20 @@ NUM_GEOMETRY_SUPPORT_DIMS: int = 2
 NUM_FINGERTIP_DISPLACEMENT_DIMS: int = 30  # 2 hands * 5 tips * 3 coords
 NUM_BEND_COSINES_DIMS: int = 20            # 2 hands * 5 chains * 2 bone-pairs
 
+# Compact face topology: nose, eye corners/lids, lip corners/lids, brows, chin.
+# Fixed schema semantics, not a configurable landmark subset.
+FACE_LANDMARK_INDICES: Tuple[int, ...] = (
+    1, 33, 263, 133, 362, 159, 386, 145, 374, 61, 291, 13, 14, 70, 300, 152,
+)
+FACE_FLIP_PERMUTATION: Tuple[int, ...] = (
+    0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 11, 12, 14, 13, 15,
+)
+NUM_FACE_SHAPE_DIMS: int = len(FACE_LANDMARK_INDICES) * 2
+NUM_FACE_FEATURE_DIMS: int = NUM_FACE_SHAPE_DIMS + 3 + 1
+FACE_OPENNESS_PAIRS: Tuple[Tuple[int, int, int, int], ...] = (
+    (11, 12, 9, 10), (5, 7, 1, 3), (6, 8, 2, 4),
+)
+
 # Base feature slice definitions (end-exclusive)
 SLICE_LOCAL_HAND_SHAPES: slice = slice(0, 126)
 SLICE_GLOBAL_WRISTS: slice = slice(126, 132)
@@ -91,6 +105,7 @@ class FeatureLayout:
     palm_scale: str
     fingertip_displacement: bool
     bend_cosines: bool
+    face: bool = False
 
     # Base Hand Slices
     slice_local_hand_shapes: slice = slice(0, 126)
@@ -110,6 +125,9 @@ class FeatureLayout:
     slice_geometry_support: Optional[slice] = None
     slice_fingertip_displacement: Optional[slice] = None
     slice_bend_cosines: Optional[slice] = None
+    slice_face_shapes: Optional[slice] = None
+    slice_face_ratios: Optional[slice] = None
+    slice_face_mask: Optional[slice] = None
 
     @property
     def has_pose(self) -> bool:
@@ -124,6 +142,7 @@ class FeatureLayout:
         palm_scale: str = "frame",
         fingertip_displacement: bool = False,
         bend_cosines: bool = False,
+        face: bool = False,
     ) -> FeatureLayout:
         if feature_set not in ALLOWED_FEATURE_SETS:
             raise ValueError(
@@ -162,6 +181,13 @@ class FeatureLayout:
             slice_bends = slice(curr, curr + NUM_BEND_COSINES_DIMS)
             curr += NUM_BEND_COSINES_DIMS
 
+        slice_face_shapes = slice_face_ratios = slice_face_mask = None
+        if face:
+            slice_face_shapes = slice(curr, curr + NUM_FACE_SHAPE_DIMS)
+            slice_face_ratios = slice(curr + NUM_FACE_SHAPE_DIMS, curr + NUM_FACE_SHAPE_DIMS + 3)
+            slice_face_mask = slice(curr + NUM_FACE_FEATURE_DIMS - 1, curr + NUM_FACE_FEATURE_DIMS)
+            curr += NUM_FACE_FEATURE_DIMS
+
         return cls(
             total_dim=curr,
             feature_set=feature_set,
@@ -169,6 +195,7 @@ class FeatureLayout:
             palm_scale=palm_scale,
             fingertip_displacement=fingertip_displacement,
             bend_cosines=bend_cosines,
+            face=face,
             slice_norm_pose=slice_norm_pose,
             slice_torso_vel=slice_torso_vel,
             slice_shoulder_scale=slice_shoulder_scale,
@@ -177,11 +204,19 @@ class FeatureLayout:
             slice_geometry_support=slice_geom,
             slice_fingertip_displacement=slice_tips,
             slice_bend_cosines=slice_bends,
+            slice_face_shapes=slice_face_shapes,
+            slice_face_ratios=slice_face_ratios,
+            slice_face_mask=slice_face_mask,
         )
 
 
 def infer_feature_layout_from_dim(dim: int) -> FeatureLayout:
     """Infer canonical layout for standard feature dimensions."""
+    face_base_dims = (143, 160, 162, 163, 173, 180, 182, 190, 192, 193, 210, 212)
+    if dim - NUM_FACE_FEATURE_DIMS in face_base_dims:
+        base = infer_feature_layout_from_dim(dim - NUM_FACE_FEATURE_DIMS)
+        return FeatureLayout.build(base.feature_set, base.wrist_reference, base.palm_scale,
+                                   base.fingertip_displacement, base.bend_cosines, face=True)
     if dim == 143:
         return FeatureLayout.build(feature_set=FEATURE_SET_HANDS)
     elif dim == 160:
@@ -250,12 +285,14 @@ def get_feature_layout_from_config(cfg: Any) -> FeatureLayout:
     palm_scale = str(_extract_config_val(cfg, "features", "palm_scale", "frame"))
     fingertip_displacement = bool(_extract_config_val(cfg, "features", "fingertip_displacement", False))
     bend_cosines = bool(_extract_config_val(cfg, "features", "bend_cosines", False))
+    face = bool(_extract_config_val(cfg, "features", "face", False))
     return FeatureLayout.build(
         feature_set=feature_set,
         wrist_reference=wrist_reference,
         palm_scale=palm_scale,
         fingertip_displacement=fingertip_displacement,
         bend_cosines=bend_cosines,
+        face=face,
     )
 
 
@@ -264,6 +301,7 @@ def get_feature_dim(
     wrist_reference: str = "image",
     fingertip_displacement: bool = False,
     bend_cosines: bool = False,
+    face: bool = False,
 ) -> int:
     """Deterministically derive feature vector dimension from arguments or config object."""
     if isinstance(feature_set, str):
@@ -272,6 +310,7 @@ def get_feature_dim(
             wrist_reference=wrist_reference,
             fingertip_displacement=fingertip_displacement,
             bend_cosines=bend_cosines,
+            face=face,
         ).total_dim
     layout = get_feature_layout_from_config(feature_set)
     return layout.total_dim
@@ -300,6 +339,7 @@ def compute_preprocess_identity(cfg: Any) -> Tuple[str, Dict[str, Any]]:
         "features.palm_scale": str(_extract_config_val(cfg, "features", "palm_scale", "frame")),
         "features.fingertip_displacement": bool(_extract_config_val(cfg, "features", "fingertip_displacement", False)),
         "features.bend_cosines": bool(_extract_config_val(cfg, "features", "bend_cosines", False)),
+        "features.face": bool(_extract_config_val(cfg, "features", "face", False)),
     }
     serialized = json.dumps(meta_params, sort_keys=True, separators=(",", ":"))
     identity_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()

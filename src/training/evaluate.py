@@ -84,7 +84,19 @@ def evaluate_test_set(
         "split_identity": derived_split_id,
         "per_participant_accuracy": per_participant,
         "git_commit_hash": git_commit_hash or "unknown",
+        "model_parameters": sum(p.numel() for p in model.parameters()),
     }
+    # Aligned per-sequence predictions support paired comparisons and signer bootstrap.
+    # Never label predictions with CSV identifiers if the loader order/length differs.
+    from torch.utils.data import SequentialSampler
+    if len(test_rows) == len(y_true) and isinstance(getattr(test_loader, "sampler", None), SequentialSampler):
+        report["predictions"] = [
+            {"sequence_id": str(row.get("sequence_id", f"sample_{idx}")),
+             "participant_id": str(row.get("participant_id", "unknown")),
+             "y_true": int(y_true[idx]), "y_pred": int(y_pred[idx]),
+             "probabilities": y_probs[idx].tolist()}
+            for idx, row in enumerate(test_rows)
+        ]
 
     if report_json_path:
         rpath = Path(report_json_path)

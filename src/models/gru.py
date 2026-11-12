@@ -164,8 +164,18 @@ def create_model(
     pooling: str = "mean_max",
     rnn_type: str = "GRU",
     is_ablation: bool = False,
-) -> ASLGRUClassifier:
+    attention_heads: int = 4,
+    feedforward_size: int = 256,
+) -> nn.Module:
     """Hàm tiện ích tạo mô hình GRU hoặc LSTM chuẩn hoặc mô hình ablation nhỏ gọn."""
+    if rnn_type.upper() == "TRANSFORMER":
+        from src.models.transformer import ASLTransformerClassifier
+        if is_ablation or bidirectional:
+            raise ValueError("Transformer does not support the RNN ablation preset or bidirectional flag.")
+        return ASLTransformerClassifier(input_size, hidden_size, num_layers, num_classes,
+                                        dropout, pooling, attention_heads, feedforward_size)
+    if rnn_type.upper() not in ("GRU", "LSTM"):
+        raise ValueError(f"Unsupported model type: {rnn_type}")
     if is_ablation:
         return ASLGRUClassifier(
             input_size=input_size,

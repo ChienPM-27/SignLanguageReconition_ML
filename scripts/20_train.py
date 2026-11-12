@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, Subset
 from src.data.dataset import ISRLandmarkDataset, create_dataloader
 from src.features.normalization import get_feature_dim
 from src.features.schema import compute_preprocess_identity
-from src.models.gru import ASLGRUClassifier
+from src.models.gru import create_model
 from src.training.evaluate import evaluate_test_set
 from src.training.metrics import compute_macro_f1, compute_top_k_accuracy, plot_learning_curves
 from src.training.train import train_gru, train_one_epoch
@@ -131,7 +131,7 @@ def run_overfit_check(
     loader = DataLoader(subset_ds, batch_size=len(chosen_indices), shuffle=True)
 
     num_classes = len(class_names)
-    model = ASLGRUClassifier(
+    model = create_model(
         input_size=expected_dim,
         hidden_size=cfg.model.hidden_size,
         num_layers=cfg.model.num_layers,
@@ -140,6 +140,8 @@ def run_overfit_check(
         bidirectional=cfg.model.bidirectional,
         pooling=cfg.model.pooling,
         rnn_type=cfg.model.name,
+        attention_heads=cfg.model.attention_heads,
+        feedforward_size=cfg.model.feedforward_size,
     ).to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
@@ -358,7 +360,7 @@ def train_single_seed(
     )
 
     num_classes = len(class_names)
-    model = ASLGRUClassifier(
+    model = create_model(
         input_size=expected_dim,
         hidden_size=cfg.model.hidden_size,
         num_layers=cfg.model.num_layers,
@@ -367,6 +369,8 @@ def train_single_seed(
         bidirectional=cfg.model.bidirectional,
         pooling=cfg.model.pooling,
         rnn_type=cfg.model.name,
+        attention_heads=cfg.model.attention_heads,
+        feedforward_size=cfg.model.feedforward_size,
     )
 
     ckpt_path = run_dir / "best_model.pt"

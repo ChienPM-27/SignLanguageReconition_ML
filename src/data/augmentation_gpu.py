@@ -16,6 +16,9 @@ from typing import Any, Optional, Tuple
 import torch
 
 from src.features.schema import (
+    FACE_FLIP_PERMUTATION,
+    FACE_LANDMARK_INDICES,
+    FACE_OPENNESS_PAIRS,
     NUM_BEND_COSINES_DIMS,
     NUM_FINGERTIP_DISPLACEMENT_DIMS,
     SLICE_GLOBAL_WRISTS,
@@ -219,6 +222,19 @@ def batch_recompute_derived_features(
             bends[:, :, :, c_idx, 1] = torch.where(valid1, cos1, torch.zeros_like(cos1))
         out[:, :, layout.slice_bend_cosines] = bends.reshape(B, T, NUM_BEND_COSINES_DIMS)
 
+    if layout.face:
+        support = out[:, :, layout.slice_face_mask].squeeze(-1) > 0.5
+        points = out[:, :, layout.slice_face_shapes].reshape(B, T, len(FACE_LANDMARK_INDICES), 2)
+        points = torch.where(support[:, :, None, None], points, torch.zeros_like(points))
+        out[:, :, layout.slice_face_shapes] = points.reshape(B, T, -1)
+        ratios = torch.zeros((B, T, 3), dtype=out.dtype, device=out.device)
+        for column, (top, bottom, left, right) in enumerate(FACE_OPENNESS_PAIRS):
+            width = torch.linalg.vector_norm(points[:, :, left] - points[:, :, right], dim=-1)
+            aperture = torch.linalg.vector_norm(points[:, :, top] - points[:, :, bottom], dim=-1)
+            valid = support & (width > normalization_epsilon)
+            ratios[:, :, column] = torch.where(valid, aperture / torch.where(valid, width, torch.ones_like(width)), 0.0)
+        out[:, :, layout.slice_face_ratios] = ratios
+
     return out
 
 
@@ -314,6 +330,12 @@ def batch_horizontal_flip(
         out[:, :, SLICE_SHOULDER_SCALE] = torch.where(
             p.unsqueeze(-1), out[:, :, SLICE_SHOULDER_SCALE], torch.zeros_like(out[:, :, SLICE_SHOULDER_SCALE])
         )
+
+    if layout and layout.face:
+        points = out[:, :, layout.slice_face_shapes].reshape(B, T, len(FACE_LANDMARK_INDICES), 2).clone()
+        points = points[:, :, FACE_FLIP_PERMUTATION]
+        points[:, :, :, 0] *= -1
+        out[:, :, layout.slice_face_shapes] = points.reshape(B, T, -1)
 
     # 5. Recompute derived features
     if D >= 143:
@@ -434,6 +456,13 @@ def batch_random_rotate_2d(
         out[:, :, SLICE_SHOULDER_SCALE] = torch.where(
             p.unsqueeze(-1), out[:, :, SLICE_SHOULDER_SCALE], torch.zeros_like(out[:, :, SLICE_SHOULDER_SCALE])
         )
+
+    if layout and layout.face:
+        points = out[:, :, layout.slice_face_shapes].reshape(B, T, len(FACE_LANDMARK_INDICES), 2).clone()
+        px, py = points[:, :, :, 0].clone(), points[:, :, :, 1].clone()
+        points[:, :, :, 0] = px * cos_a[:, None, None] - py * sin_a[:, None, None]
+        points[:, :, :, 1] = px * sin_a[:, None, None] + py * cos_a[:, None, None]
+        out[:, :, layout.slice_face_shapes] = points.reshape(B, T, -1)
 
     # 4. Recompute derived features
     if D >= 143:

@@ -86,6 +86,7 @@ features:
   palm_scale: "frame"             # Palm size normalization: 'frame' (default) or 'clip_median'
   fingertip_displacement: false   # Whether to append 30 fingertip local displacement features
   bend_cosines: false             # Whether to append 20 finger articulation cosine features
+  face: false                    # Append compact face: 16 normalized XY points, 3 openness ratios, 1 support mask (+36)
 
 split:
   method: "participant_holdout"   # 'participant_holdout' or 'group_kfold'
@@ -132,6 +133,8 @@ model:
   dropout: 0.3
   bidirectional: false
   pooling: "mean_max"             # Allowed: "mean_max", "attention", "mean", "last" 
+  attention_heads: 4              # Transformer multi-head attention count
+  feedforward_size: 256           # Transformer feed-forward layer width
 
 training:
   preload: "device"               # Nạp trước dữ liệu: 'none' (đọc đĩa từng mẫu), 'ram' (nạp vào RAM CPU), 'device' (nạp thẳng lên GPU/CPU, tự quản lý loader, bỏ qua num_workers)

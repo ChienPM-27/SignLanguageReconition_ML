@@ -19,7 +19,7 @@ import torch
 from src.features.landmark_extractor import MediaPipeHandExtractor
 from src.features.pipeline import prepare_landmark_sequence
 from src.features.schema import PREPROCESS_SCHEMA_VERSION, get_feature_dim
-from src.models.gru import ASLGRUClassifier
+from src.models.gru import ASLGRUClassifier, create_model
 from src.utils.config import Config, build_config_from_dict
 
 
@@ -218,7 +218,7 @@ class ISLRPredictor:
             self.pooling = self.cfg.model.pooling
             self.rnn_type = self.cfg.model.name
 
-            self.model = ASLGRUClassifier(
+            self.model = create_model(
                 input_size=self.input_size,
                 hidden_size=self.hidden_size,
                 num_layers=self.num_layers,
@@ -227,6 +227,8 @@ class ISLRPredictor:
                 bidirectional=self.bidirectional,
                 pooling=self.pooling,
                 rnn_type=self.rnn_type,
+                attention_heads=self.cfg.model.attention_heads,
+                feedforward_size=self.cfg.model.feedforward_size,
             )
         else:
             if schema_version is not None and schema_version != PREPROCESS_SCHEMA_VERSION:
@@ -376,6 +378,8 @@ class ISLRPredictor:
         pose_masks: Optional[np.ndarray] = None,
         stats: Optional[Dict[str, Any]] = None,
         top_k: int = 3,
+        face_coords: Optional[np.ndarray] = None,
+        face_mask: Optional[np.ndarray] = None,
     ) -> PredictionResult:
         """Process raw coordinates through canonical preprocessing to prediction."""
         if self.is_legacy or self.cfg is None:
@@ -388,6 +392,9 @@ class ISLRPredictor:
         if pose_coords is None and stats and "pose_coords" in stats:
             pose_coords = stats["pose_coords"]
             pose_masks = stats.get("pose_masks")
+        if face_coords is None and stats:
+            face_coords = stats.get("face_coords")
+            face_mask = stats.get("face_mask")
 
         if getattr(self.cfg.features, "wrist_reference", "image") == "torso_xy":
             if pose_coords is None or (isinstance(pose_coords, np.ndarray) and len(pose_coords) == 0):
@@ -402,6 +409,8 @@ class ISLRPredictor:
             pose_coords=pose_coords,
             pose_masks=pose_masks,
             cfg=self.cfg,
+            face_coords=face_coords,
+            face_mask=face_mask,
         )
 
         if not result.is_usable:
@@ -418,6 +427,15 @@ class ISLRPredictor:
         raw_coords, hand_masks, stats = self.extractor.extract_from_video(video_path)
         if not stats.get("ok", False) or len(raw_coords) == 0:
             raise ValueError(f"Could not read video or extract frames from: {video_path}")
+        if self.cfg is not None:
+            need_face = self.cfg.features.face and stats.get("face_coords") is None
+            need_pose = self.cfg.features.set == "hands_pose" and stats.get("pose_coords") is None
+            if need_face or need_pose:
+                from src.features.video_auxiliary import extract_auxiliary_video
+                auxiliary = extract_auxiliary_video(video_path, face=need_face, pose=need_pose)
+                if any(len(value) != len(raw_coords) for value in auxiliary.values()):
+                    raise ValueError("Auxiliary face/pose frames do not align with hand extraction.")
+                stats.update(auxiliary)
         pose_coords = stats.get("pose_coords")
         pose_masks = stats.get("pose_masks")
         return self.predict_raw_coordinates(

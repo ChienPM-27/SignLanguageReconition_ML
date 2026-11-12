@@ -20,7 +20,7 @@ import torch
 
 from src.data.dataset import ISRLandmarkDataset, create_dataloader
 from src.features.schema import compute_preprocess_identity, get_feature_dim
-from src.models.gru import ASLGRUClassifier
+from src.models.gru import create_model
 from src.training.evaluate import evaluate_test_set
 from src.utils.checkpoint import validate_checkpoint_metadata
 from src.utils.config import apply_overrides, build_config_from_dict
@@ -110,7 +110,7 @@ def run_standalone_evaluation(
     expected_dim = get_feature_dim(cfg)
 
     # Instantiate model from validated configuration
-    model = ASLGRUClassifier(
+    model = create_model(
         input_size=expected_dim,
         hidden_size=cfg.model.hidden_size,
         num_layers=cfg.model.num_layers,
@@ -119,6 +119,8 @@ def run_standalone_evaluation(
         bidirectional=cfg.model.bidirectional,
         pooling=cfg.model.pooling,
         rnn_type=cfg.model.name,
+        attention_heads=cfg.model.attention_heads,
+        feedforward_size=cfg.model.feedforward_size,
     )
     model.load_state_dict(ckpt_payload["model_state_dict"])
     model.to(device)

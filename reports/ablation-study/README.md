@@ -1,8 +1,12 @@
 # Ablation study — cả 3 thành viên cùng train
 
+> Campaign training lại với face, architecture và GRU/LSTM/Transformer dùng
+> [kế hoạch V2](../ablation-study-v2/PLAN.md). Nội dung bên dưới ghi campaign v4
+> trước đó; V2 có source v5, baseline và ma trận riêng.
+
 Ngày chuẩn bị: 2026-11-11 (+07:00).
 Branch báo cáo: `codex/ablation-study`.
-Trạng thái campaign: **PREPARING — chưa có kết quả train thực tế**.
+Trạng thái campaign: **A đã hoàn tất F0/F0-control (6/6 model); artifacts F1–F4 đang PENDING.**
 Branch chứa source v4, phân công, tools lưu log và mẫu báo cáo.
 Source đã freeze tại `f6cf69fd4d22fece9c70a66a1b9f1e3461eb2fc2`;
 shared/config.yaml và shared/source_commit.txt đã có trong repo. Xem SOURCE_STATUS.md.
@@ -119,6 +123,8 @@ ngay sau job.** File trong /kaggle/working chỉ trở thành handoff bền vữ
 đó. Cache lớn trong /kaggle/temp không nằm trong ZIP; cache audit đã được giữ.
 
 ## Bảng kết quả sau khi train
+
+Cấu trúc lưu ZIP/model, bảng riêng A/B/C và bảng chung: xem [STORAGE.md](STORAGE.md).
 
 Tải và giải nén ZIP của 6 cấu hình vào một root chung, ví dụ
 `artifacts/ablation-study/`. Giữ nguyên cấu trúc từng attempt.

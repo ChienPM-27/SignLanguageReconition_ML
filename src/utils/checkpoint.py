@@ -155,11 +155,15 @@ def validate_model_architecture(
 
     # 2. RNN Type
     model_rnn_type = getattr(model, "rnn_type", None)
-    if model_rnn_type is not None and model_rnn_type != saved_cfg.model.name:
+    if model_rnn_type is not None and model_rnn_type.upper() != saved_cfg.model.name.upper():
         raise ValueError(
             f"Model rnn_type mismatch{path_str}: checkpoint was trained with rnn_type='{saved_cfg.model.name}', "
             f"but current model was initialized with rnn_type='{model_rnn_type}'."
         )
+    if saved_cfg.model.name.upper() == "TRANSFORMER":
+        for key in ("attention_heads", "feedforward_size"):
+            if getattr(model, key, None) != getattr(saved_cfg.model, key):
+                raise ValueError(f"Model {key} mismatch{path_str}.")
 
     # 3. Hidden size
     model_hidden = getattr(model, "hidden_size", None)

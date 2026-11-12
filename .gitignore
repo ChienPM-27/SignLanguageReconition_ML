@@ -39,6 +39,7 @@ reports/*
 !reports/training_fix_notes.md
 !reports/p0_*.md
 !reports/ablation-study/
+!reports/ablation-study-v2/
 !reports/astra_*.md
 !reports/gemini_astra_handoff_prompt.md
 outputs/*
@@ -52,3 +53,11 @@ data/cache/
 graphify-out/cache/
 .review-wave-a/
 .review-wave-a-tmp/
+
+# Local ablation bundles, checkpoints, and extracted runtime artifacts
+artifacts/ablation-study/
+
+# V2 runtime artifacts and reusable feature caches
+/ablation_v2_runtime/
+/ablation_v2_cache/
+/artifacts/ablation-study-v2/

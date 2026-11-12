@@ -16,12 +16,15 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Optional
 import numpy as np
+from src.features.face import face_openness
 
 from src.features.normalization import (
     compute_bend_cosines,
     compute_fingertip_displacements,
 )
 from src.features.schema import (
+    FACE_FLIP_PERMUTATION,
+    FACE_LANDMARK_INDICES,
     SLICE_GLOBAL_WRISTS,
     SLICE_HAND_MASKS,
     SLICE_LOCAL_HAND_SHAPES,
@@ -142,6 +145,13 @@ def recompute_derived_features(
         shapes = out[:, layout.slice_local_hand_shapes].reshape(T, 2, 21, 3)
         bends = compute_bend_cosines(shapes, m[:, :2], normalization_epsilon=normalization_epsilon)
         out[:, layout.slice_bend_cosines] = bends
+
+    if layout.face:
+        support = out[:, layout.slice_face_mask].reshape(-1) > 0.5
+        points = out[:, layout.slice_face_shapes].reshape(T, len(FACE_LANDMARK_INDICES), 2)
+        points = np.where(support[:, None, None], points, 0.0)
+        out[:, layout.slice_face_shapes] = points.reshape(T, -1)
+        out[:, layout.slice_face_ratios] = face_openness(points, support, normalization_epsilon)
 
     return out
 
@@ -292,6 +302,10 @@ def random_rotate_2d(
         out[:, SLICE_TORSO_VEL] = u
         out[:, SLICE_SHOULDER_SCALE] = np.where(p[:, np.newaxis], out[:, SLICE_SHOULDER_SCALE], 0.0)
 
+    if layout and layout.face:
+        points = out[:, layout.slice_face_shapes].reshape(T, len(FACE_LANDMARK_INDICES), 2)
+        out[:, layout.slice_face_shapes] = (points @ rot_matrix.T).reshape(T, -1)
+
     # 4. Recompute derived features
     if D >= 143:
         out = recompute_derived_features(
@@ -392,6 +406,12 @@ def horizontal_flip(
         u[:, 1:] = np.where(u_valid[:, np.newaxis], u[:, 1:], 0.0)
         out[:, SLICE_TORSO_VEL] = u
         out[:, SLICE_SHOULDER_SCALE] = np.where(p[:, np.newaxis], out[:, SLICE_SHOULDER_SCALE], 0.0)
+
+    if layout and layout.face:
+        points = out[:, layout.slice_face_shapes].reshape(T, len(FACE_LANDMARK_INDICES), 2).copy()
+        points = points[:, FACE_FLIP_PERMUTATION]
+        points[:, :, 0] *= -1
+        out[:, layout.slice_face_shapes] = points.reshape(T, -1)
 
     # 5. Recompute derived features (relative wrist, velocities, fingertips, bends)
     if D >= 143:
