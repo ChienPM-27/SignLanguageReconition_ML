@@ -1,0 +1,126 @@
+[
+  {
+    "run_id": "G0__H",
+    "profile": "G0",
+    "feature": "H",
+    "regions": [
+      "hands"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__H.yaml"
+  },
+  {
+    "run_id": "G0__B",
+    "profile": "G0",
+    "feature": "B",
+    "regions": [
+      "body"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__B.yaml"
+  },
+  {
+    "run_id": "G0__F",
+    "profile": "G0",
+    "feature": "F",
+    "regions": [
+      "face"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__F.yaml"
+  },
+  {
+    "run_id": "G0__HB",
+    "profile": "G0",
+    "feature": "HB",
+    "regions": [
+      "hands",
+      "body"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__HB.yaml"
+  },
+  {
+    "run_id": "G0__HF",
+    "profile": "G0",
+    "feature": "HF",
+    "regions": [
+      "hands",
+      "face"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__HF.yaml"
+  },
+  {
+    "run_id": "G0__BF",
+    "profile": "G0",
+    "feature": "BF",
+    "regions": [
+      "body",
+      "face"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__BF.yaml"
+  },
+  {
+    "run_id": "G0__HBF",
+    "profile": "G0",
+    "feature": "HBF",
+    "regions": [
+      "hands",
+      "body",
+      "face"
+    ],
+    "owner": "A",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G0__HBF.yaml"
+  }
+]

@@ -121,6 +121,10 @@ def run_standalone_evaluation(
         rnn_type=cfg.model.name,
         attention_heads=cfg.model.attention_heads,
         feedforward_size=cfg.model.feedforward_size,
+        region_fusion=cfg.model.region_fusion,
+        regions=cfg.model.regions,
+        region_weights=cfg.model.region_weights,
+        region_normalization_epsilon=cfg.model.region_normalization_epsilon,
     )
     model.load_state_dict(ckpt_payload["model_state_dict"])
     model.to(device)

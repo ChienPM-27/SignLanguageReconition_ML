@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterator, Optional, Tuple
 import torch
+from torch.utils.data import RandomSampler, SequentialSampler
 
 
 class DeviceDataLoader:
@@ -33,6 +34,7 @@ class DeviceDataLoader:
         self.dataset = dataset
         self.batch_size = max(1, batch_size)
         self.shuffle = shuffle
+        self.sampler = RandomSampler(dataset) if shuffle else SequentialSampler(dataset)
         self.drop_last = drop_last
         self.augment = augment
         self.augmentation_config = augmentation_config

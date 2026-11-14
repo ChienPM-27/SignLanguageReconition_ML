@@ -1,4 +1,5 @@
 .venv/
+.venv-*/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
@@ -40,6 +41,7 @@ reports/*
 !reports/p0_*.md
 !reports/ablation-study/
 !reports/ablation-study-v2/
+!reports/ablation-study-v3/
 !reports/astra_*.md
 !reports/gemini_astra_handoff_prompt.md
 outputs/*
@@ -62,3 +64,12 @@ artifacts/ablation-study/
 /ablation_v2_cache/
 /artifacts/ablation-study-v2/
 /ablation_v2_results/
+
+# Local campaigns, data bundles, rendered previews and validation scratch space
+/artifacts/
+/tmp/
+/output/
+/.local-f0/
+/ablation_v3_runtime/
+/ablation_v3_cache/
+/ablation_v3_results/

@@ -229,6 +229,10 @@ class ISLRPredictor:
                 rnn_type=self.rnn_type,
                 attention_heads=self.cfg.model.attention_heads,
                 feedforward_size=self.cfg.model.feedforward_size,
+                region_fusion=self.cfg.model.region_fusion,
+                regions=self.cfg.model.regions,
+                region_weights=self.cfg.model.region_weights,
+                region_normalization_epsilon=self.cfg.model.region_normalization_epsilon,
             )
         else:
             if schema_version is not None and schema_version != PREPROCESS_SCHEMA_VERSION:

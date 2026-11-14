@@ -142,6 +142,10 @@ def run_overfit_check(
         rnn_type=cfg.model.name,
         attention_heads=cfg.model.attention_heads,
         feedforward_size=cfg.model.feedforward_size,
+        region_fusion=cfg.model.region_fusion,
+        regions=cfg.model.regions,
+        region_weights=cfg.model.region_weights,
+        region_normalization_epsilon=cfg.model.region_normalization_epsilon,
     ).to(device)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
@@ -371,6 +375,10 @@ def train_single_seed(
         rnn_type=cfg.model.name,
         attention_heads=cfg.model.attention_heads,
         feedforward_size=cfg.model.feedforward_size,
+        region_fusion=cfg.model.region_fusion,
+        regions=cfg.model.regions,
+        region_weights=cfg.model.region_weights,
+        region_normalization_epsilon=cfg.model.region_normalization_epsilon,
     )
 
     ckpt_path = run_dir / "best_model.pt"

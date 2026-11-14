@@ -1,0 +1,374 @@
+[
+  {
+    "run_id": "G-mean__H",
+    "profile": "G-mean",
+    "feature": "H",
+    "regions": [
+      "hands"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__H.yaml"
+  },
+  {
+    "run_id": "G-mean__B",
+    "profile": "G-mean",
+    "feature": "B",
+    "regions": [
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__B.yaml"
+  },
+  {
+    "run_id": "G-mean__F",
+    "profile": "G-mean",
+    "feature": "F",
+    "regions": [
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__F.yaml"
+  },
+  {
+    "run_id": "G-mean__HB",
+    "profile": "G-mean",
+    "feature": "HB",
+    "regions": [
+      "hands",
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__HB.yaml"
+  },
+  {
+    "run_id": "G-mean__HF",
+    "profile": "G-mean",
+    "feature": "HF",
+    "regions": [
+      "hands",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__HF.yaml"
+  },
+  {
+    "run_id": "G-mean__BF",
+    "profile": "G-mean",
+    "feature": "BF",
+    "regions": [
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-mean__BF.yaml"
+  },
+  {
+    "run_id": "G-mean__HBF",
+    "profile": "G-mean",
+    "feature": "HBF",
+    "regions": [
+      "hands",
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G-mean__HBF.yaml"
+  },
+  {
+    "run_id": "G-attn__H",
+    "profile": "G-attn",
+    "feature": "H",
+    "regions": [
+      "hands"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__H.yaml"
+  },
+  {
+    "run_id": "G-attn__B",
+    "profile": "G-attn",
+    "feature": "B",
+    "regions": [
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__B.yaml"
+  },
+  {
+    "run_id": "G-attn__F",
+    "profile": "G-attn",
+    "feature": "F",
+    "regions": [
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__F.yaml"
+  },
+  {
+    "run_id": "G-attn__HB",
+    "profile": "G-attn",
+    "feature": "HB",
+    "regions": [
+      "hands",
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__HB.yaml"
+  },
+  {
+    "run_id": "G-attn__HF",
+    "profile": "G-attn",
+    "feature": "HF",
+    "regions": [
+      "hands",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__HF.yaml"
+  },
+  {
+    "run_id": "G-attn__BF",
+    "profile": "G-attn",
+    "feature": "BF",
+    "regions": [
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-attn__BF.yaml"
+  },
+  {
+    "run_id": "G-attn__HBF",
+    "profile": "G-attn",
+    "feature": "HBF",
+    "regions": [
+      "hands",
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G-attn__HBF.yaml"
+  },
+  {
+    "run_id": "G-bi__H",
+    "profile": "G-bi",
+    "feature": "H",
+    "regions": [
+      "hands"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__H.yaml"
+  },
+  {
+    "run_id": "G-bi__B",
+    "profile": "G-bi",
+    "feature": "B",
+    "regions": [
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__B.yaml"
+  },
+  {
+    "run_id": "G-bi__F",
+    "profile": "G-bi",
+    "feature": "F",
+    "regions": [
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__F.yaml"
+  },
+  {
+    "run_id": "G-bi__HB",
+    "profile": "G-bi",
+    "feature": "HB",
+    "regions": [
+      "hands",
+      "body"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__HB.yaml"
+  },
+  {
+    "run_id": "G-bi__HF",
+    "profile": "G-bi",
+    "feature": "HF",
+    "regions": [
+      "hands",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__HF.yaml"
+  },
+  {
+    "run_id": "G-bi__BF",
+    "profile": "G-bi",
+    "feature": "BF",
+    "regions": [
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 2,
+    "config": "G-bi__BF.yaml"
+  },
+  {
+    "run_id": "G-bi__HBF",
+    "profile": "G-bi",
+    "feature": "HBF",
+    "regions": [
+      "hands",
+      "body",
+      "face"
+    ],
+    "owner": "B",
+    "dimension": 196,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "phase": 1,
+    "config": "G-bi__HBF.yaml"
+  }
+]

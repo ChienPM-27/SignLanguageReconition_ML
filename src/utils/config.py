@@ -454,8 +454,32 @@ class ModelConfig:
     pooling: str = "mean_max"
     attention_heads: int = 4
     feedforward_size: int = 256
+    region_fusion: bool = False
+    regions: List[str] = field(default_factory=lambda: ["hands", "body", "face"])
+    region_weights: Dict[str, float] = field(default_factory=lambda: {"hands": 0.7, "body": 0.2, "face": 0.1})
+    region_normalization_epsilon: float = 0.000001
 
     def validate(self) -> None:
+        if not isinstance(self.region_fusion, bool):
+            raise TypeError("model.region_fusion must be a boolean.")
+        allowed_regions = {"hands", "body", "face"}
+        if (not isinstance(self.regions, list) or not self.regions
+                or any(not isinstance(region, str) or region not in allowed_regions for region in self.regions)
+                or len(self.regions) != len(set(self.regions))):
+            raise ValueError("model.regions must be a nonempty, unique list of hands/body/face.")
+        if not isinstance(self.region_weights, dict):
+            raise TypeError("model.region_weights must be a dictionary.")
+        unknown_weights = set(self.region_weights) - allowed_regions
+        if unknown_weights:
+            raise KeyError(f"Unknown model.region_weights keys: {sorted(unknown_weights)}")
+        if set(self.region_weights) != allowed_regions:
+            raise ValueError("model.region_weights requires exactly hands/body/face.")
+        if any(type(value) is bool or not isinstance(value, (int, float))
+               or not math.isfinite(value) or value <= 0 for value in self.region_weights.values()):
+            raise ValueError("model.region_weights values must be finite and positive.")
+        epsilon = self.region_normalization_epsilon
+        if type(epsilon) is bool or not isinstance(epsilon, (int, float)) or not math.isfinite(epsilon) or epsilon <= 0:
+            raise ValueError("model.region_normalization_epsilon must be finite and positive.")
         if not isinstance(self.name, str) or self.name.upper() not in ("GRU", "LSTM", "TRANSFORMER"):
             raise ValueError(f"model.name must be 'GRU', 'LSTM' or 'Transformer'. Got '{self.name}'.")
         if type(self.hidden_size) is bool or not isinstance(self.hidden_size, int) or self.hidden_size < 8:
@@ -588,6 +612,11 @@ class Config:
         self.training.validate()
         self.run.validate()
         self.evaluation.validate()
+        if self.model.region_fusion and (self.features.set != "hands_pose" or not self.features.face
+                or self.features.wrist_reference != "image" or self.features.palm_scale != "frame"
+                or self.features.fingertip_displacement or self.features.bend_cosines
+                or self.preprocess.trim_no_hand):
+            raise ValueError("Region fusion requires the independent 196-channel hands_pose+face image/frame layout, no extensions and no hand-based trimming.")
         if self.eda.num_landmark_probe_files > self.data.sample_budget_total_files:
             raise ValueError(
                 f"eda.num_landmark_probe_files ({self.eda.num_landmark_probe_files}) "
@@ -688,6 +717,9 @@ def _apply_override(cfg_dict: Dict[str, Any], override_str: str) -> None:
     target_field = next(f for f in fields(section_cls) if f.name == field_name)
 
     if len(tokens) > 2:
+        if section_name == "model" and field_name == "region_weights":
+            if len(tokens) != 3 or tokens[2] not in {"hands", "body", "face"}:
+                raise KeyError(f"Unknown configuration key '{key_path}'.")
         # Check if target_field is typed as a dict
         origin = getattr(target_field.type, "__origin__", target_field.type)
         is_dict_field = (

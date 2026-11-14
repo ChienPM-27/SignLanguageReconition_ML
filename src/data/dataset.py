@@ -68,12 +68,7 @@ def load_and_validate_feature_file(
         raise ValueError(
             f"Feature dimension mismatch in {path} for sequence '{sequence_id}': expected {feature_dim}, got {d_cur}"
         )
-    ALLOWED_FEATURE_DIMS = frozenset({143, 160, 162, 163, 173, 180, 182, 190, 192, 193, 210, 212})
-    if d_cur not in ALLOWED_FEATURE_DIMS:
-        raise ValueError(
-            f"Unsupported feature dimension {d_cur} in {path} for sequence '{sequence_id}'. "
-            f"Allowed dimensions: {sorted(ALLOWED_FEATURE_DIMS)}."
-        )
+    layout = infer_feature_layout_from_dim(d_cur)
 
     # 4. Kiểm tra đúng chiều thời gian sequence_length (Strict check: không silent pad/truncate)
     if t_cur != sequence_length:
@@ -83,7 +78,6 @@ def load_and_validate_feature_file(
         )
 
     # 5. Kiểm tra tính nhị phân của các mask hỗ trợ (support masks must be strictly binary 0.0 or 1.0)
-    layout = infer_feature_layout_from_dim(d_cur)
     hand_support = features[:, layout.slice_hand_masks]
     if not np.all((hand_support == 0.0) | (hand_support == 1.0)):
         raise ValueError(
@@ -104,6 +98,10 @@ def load_and_validate_feature_file(
                 f"Non-binary geometry support mask values detected in {path} for sequence '{sequence_id}'. "
                 "Geometry support masks must strictly contain 0.0 or 1.0."
             )
+    if layout.slice_face_mask is not None:
+        face_support = features[:, layout.slice_face_mask]
+        if not np.all((face_support == 0.0) | (face_support == 1.0)):
+            raise ValueError(f"Non-binary face support mask values detected in {path} for sequence '{sequence_id}'.")
 
     return features
 

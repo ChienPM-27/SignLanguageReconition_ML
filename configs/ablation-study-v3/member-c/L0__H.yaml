@@ -1,0 +1,164 @@
+env:
+  name: auto
+  seed: 42
+  use_drive: false
+  project_dir_name: asl-signs-ablation-v3
+  local_root: .
+  log_level: INFO
+data:
+  competition_id: asl-signs
+  train_csv_name: train.csv
+  parquet_remote_template: train_landmark_files/{participant_id}/{sequence_id}.parquet
+  local_mirror_dir: null
+  cache_dir: data/cache
+  download_budget_total_files: null
+  max_files_per_gloss: null
+  num_download_workers: 4
+  retry: 3
+  sample_budget_total_files: 5
+  seqs_per_candidate_sign: 2
+  sample_strategy: spread_over_participants
+  sample_seed: 42
+  parquet_hand_types:
+  - left_hand
+  - right_hand
+  landmark_files_dir: train_landmark_files
+eda:
+  num_landmark_probe_files: 1
+  num_expected_landmarks: 543
+  top_n_plot: 20
+  min_frames: 10
+  max_frames: 200
+  min_hand_coverage: 0.1
+  expected_columns:
+  - frame
+  - row_id
+  - type
+  - landmark_index
+  - x
+  - y
+  - z
+selection:
+  n_glosses: 20
+  n_candidates: 60
+  candidate_prefilter:
+    min_samples: 10
+    min_participants: 5
+    max_participant_dominance: 0.5
+  weights:
+    samples: 1.0
+    participant_coverage: 1.0
+    participant_balance: 1.0
+    hand_coverage: 1.0
+    motion_energy: 1.0
+    separability: 1.0
+    handshape_diversity: 1.0
+  require_hands: any
+  exclude_signs: []
+  force_include_signs: []
+  diversity_method: greedy_maxmin
+  selection_seed: 42
+output:
+  output_dir: outputs
+  report_dir: reports
+  selection_dir: data/selection
+  save_resolved_config: true
+  overwrite: true
+preprocess:
+  trim_no_hand: false
+  pad_frames_around: 2
+  min_valid_frames: 3
+  max_gap_frames: 3
+  sequence_length: 32
+  num_workers: 4
+  dominant_hand: disabled
+  normalization_epsilon: 0.0001
+features:
+  set: hands_pose
+  wrist_reference: image
+  palm_scale: frame
+  fingertip_displacement: false
+  bend_cosines: false
+  face: true
+split:
+  method: participant_holdout
+  n_train: 0.7
+  n_val: 0.15
+  n_test: 0.15
+  n_folds: 5
+  seed: 42
+  min_per_gloss_per_split: 1
+  manifest_path: null
+augmentation:
+  flip:
+    enabled: true
+    prob: 0.5
+    swap_hands: true
+  jitter:
+    enabled: true
+    prob: 0.5
+    sigma: 0.01
+  rotate:
+    enabled: true
+    prob: 0.5
+    max_angle_deg: 8.0
+  time_stretch:
+    enabled: false
+    prob: 0.3
+    max_stretch: 0.2
+  scale_translate:
+    enabled: false
+    prob: 0.7
+    scale_min: 0.85
+    scale_max: 1.15
+    translate: 0.1
+  shape_scale:
+    enabled: true
+    prob: 0.5
+    r: 0.1
+model:
+  name: LSTM
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.3
+  bidirectional: false
+  pooling: mean_max
+  attention_heads: 4
+  feedforward_size: 256
+  region_fusion: true
+  regions:
+  - hands
+  region_weights:
+    hands: 0.7
+    body: 0.2
+    face: 0.1
+  region_normalization_epsilon: 1.0e-06
+training:
+  preload: device
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  epochs: 60
+  patience: 15
+  early_stopping_min_delta: 0.0001
+  early_stopping_min_epochs: 5
+  scheduler:
+    type: plateau
+    factor: 0.5
+    patience: 5
+  grad_clip: 1.0
+  num_seeds: 3
+  seeds:
+  - 42
+  - 43
+  - 44
+  amp: false
+  num_workers: 0
+  device: auto
+  resume_checkpoint: null
+run:
+  name: L0__H
+  output_dir: outputs/runs
+evaluation:
+  evaluate_test: false

@@ -1,5 +1,7 @@
 # Source và validation V2
 
+> Campaign V2 đã ngừng lưu local ngày 14/11/2026 theo yêu cầu chỉ giữ V3 `b4fd56f03a57`. Bundles/results và notebooks V2 đã chuyển vào Windows Recycle Bin; source/config/tools còn lại là tài liệu và công cụ cũ. Nội dung bên dưới là lịch sử kiểm tra trước khi dọn. Xem [V3 hiện tại](../ablation-study-v3/STATUS.md) và [ledger](../cleanup/2026-11-14.json).
+
 Ngày kiểm tra: 2026-11-12, Asia/Saigon.
 
 Implementation đã có:

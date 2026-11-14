@@ -1,5 +1,7 @@
 # Ablation study — cả 3 thành viên cùng train
 
+> Campaign V1 đã ngừng lưu local ngày 14/11/2026: bundles/results, bảng kết quả và PDF đã chuyển vào Windows Recycle Bin theo yêu cầu chỉ giữ V3 `b4fd56f03a57`. Source/tools và tài liệu bên dưới được giữ để tham khảo. Xem [V3 hiện tại](../ablation-study-v3/STATUS.md) và [ledger](../cleanup/2026-11-14.json).
+
 > Campaign training lại với face, architecture và GRU/LSTM/Transformer dùng
 > [kế hoạch V2](../ablation-study-v2/PLAN.md). Nội dung bên dưới ghi campaign v4
 > trước đó; V2 có source v5, baseline và ma trận riêng.

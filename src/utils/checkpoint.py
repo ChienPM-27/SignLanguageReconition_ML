@@ -146,6 +146,13 @@ def validate_model_architecture(
     path_str = f" at {checkpoint_path}" if checkpoint_path else ""
 
     # 1. Pooling
+    if bool(getattr(model, "region_fusion", False)) != saved_cfg.model.region_fusion:
+        raise ValueError(f"Model region_fusion mismatch{path_str}.")
+    if saved_cfg.model.region_fusion:
+        if (tuple(model.regions) != tuple(saved_cfg.model.regions)
+                or model.region_weights != saved_cfg.model.region_weights
+                or model.region_normalization_epsilon != saved_cfg.model.region_normalization_epsilon):
+            raise ValueError(f"Model region settings mismatch{path_str}.")
     model_pooling = getattr(model, "pooling", None)
     if model_pooling is not None and model_pooling != saved_cfg.model.pooling:
         raise ValueError(

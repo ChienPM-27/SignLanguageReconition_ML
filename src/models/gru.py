@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from typing import Mapping, Optional, Sequence
 
 
 class TemporalAttention(nn.Module):
@@ -166,8 +167,28 @@ def create_model(
     is_ablation: bool = False,
     attention_heads: int = 4,
     feedforward_size: int = 256,
+    region_fusion: bool = False,
+    regions: Optional[Sequence[str]] = None,
+    region_weights: Optional[Mapping[str, float]] = None,
+    region_normalization_epsilon: float = 0.000001,
 ) -> nn.Module:
     """Hàm tiện ích tạo mô hình GRU hoặc LSTM chuẩn hoặc mô hình ablation nhỏ gọn."""
+    if region_fusion:
+        from src.models.region_fusion import RegionFusionClassifier
+        from src.utils.config import ModelConfig
+        from src.features.schema import FeatureLayout
+        fusion_cfg = ModelConfig(region_fusion=True, region_normalization_epsilon=region_normalization_epsilon)
+        if regions is not None:
+            fusion_cfg.regions = list(regions)
+        if region_weights is not None:
+            fusion_cfg.region_weights = dict(region_weights)
+        fusion_cfg.validate()
+        if input_size != FeatureLayout.build(feature_set="hands_pose", face=True).total_dim or is_ablation:
+            raise ValueError("Region fusion requires the 196-channel base layout and explicit architecture settings.")
+        core = create_model(hidden_size, num_classes, hidden_size, num_layers, dropout,
+                            bidirectional, pooling, rnn_type, False, attention_heads, feedforward_size)
+        return RegionFusionClassifier(core, fusion_cfg.regions, fusion_cfg.region_weights,
+                                      fusion_cfg.region_normalization_epsilon)
     if rnn_type.upper() == "TRANSFORMER":
         from src.models.transformer import ASLTransformerClassifier
         if is_ablation or bidirectional:
