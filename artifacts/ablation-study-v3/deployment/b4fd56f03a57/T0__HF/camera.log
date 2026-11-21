@@ -1,0 +1,7 @@
+2026-11-20 19:51:32,102 INFO Camera ready: T0__HF seed42 on cpu
+2026-11-20 19:51:51,720 INFO Prediction: brown 0.5649 shape=[32, 196] face_coverage=1.000
+2026-11-20 19:52:04,698 INFO Prediction: brown 0.8008 shape=[32, 196] face_coverage=1.000
+2026-11-20 19:52:11,989 INFO Prediction: brown 0.8797 shape=[32, 196] face_coverage=1.000
+2026-11-20 19:52:20,629 INFO Prediction: brown 0.5519 shape=[32, 196] face_coverage=1.000
+2026-11-20 19:52:40,789 INFO Prediction: bye 0.3619 shape=[32, 196] face_coverage=1.000
+2026-11-20 19:52:54,230 INFO Prediction: brown 0.7019 shape=[32, 196] face_coverage=1.000

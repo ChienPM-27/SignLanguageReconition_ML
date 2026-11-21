@@ -1,0 +1,24 @@
+{
+  "scope": "v3-full42",
+  "freeze_id": "b4fd56f03a57",
+  "winner": "T0__HF",
+  "selection_rule": "Mean Validation Macro-F1, lower population std, fewer parameters, run ID",
+  "provenance": {
+    "freeze_id": "b4fd56f03a57",
+    "config_yaml_sha256": "1878573d13dfc61660cd9eaab70d408468b997642cb97ecf9945667b403826c8",
+    "split_manifest_json_sha256": "d1b3bda1fe9239ca51d9f27cf4859a79beb00a990c6fa7ab8ba877959ad7dc8d",
+    "selection_glosses_csv_sha256": "e94ca4c5a5e38191c499533edd8449d57c6e64c8ff0a75416bfca29f12ea95e5",
+    "source_manifest_json_sha256": "bdb44fd858c71653556404f97105d117342a14562397856592dfe84183c8b911",
+    "matrix_json_sha256": "65b96bbf89e2772886e376ce148daf6594d9a5d8913533c695fac2dcfc0d7332",
+    "protocol_json_sha256": "08531098aeef98c438f6bfa539c7a76ec72e479243a331ffe1dae639a451a588"
+  },
+  "archive_sha256": "9d6acb579e3f1f490dc5bb680269d45015df997ed20b24f3c230fbd48c6095a2",
+  "archive": "D:\\MyProject\\SignLanguageReconition_ML\\artifacts\\ablation-study-v3\\results\\member-c\\b4fd56f03a57\\9d6acb579e3f\\member_c_b4fd56f03a57_v3_results.zip",
+  "archive_prefix": "runs/T0__HF/20261117T105455_975404Z",
+  "checkpoints": {
+    "seed_42": "f7557b21e9e4bff4fe133f277fe97c1979e32d84f6696af5dcacd625aeff8f9b",
+    "seed_43": "da48fc6d8f35710e629995f1a03098f953d876b63e8cd26665475dc831fe0980",
+    "seed_44": "22c62c75152e2f208ee39fcd699f6b4484658ad81f300a10a025e929e36f0079"
+  },
+  "test_evaluated": false
+}

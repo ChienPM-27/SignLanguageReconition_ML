@@ -171,3 +171,25 @@ run:
 
 evaluation:
   evaluate_test: false            # Default training does not access test set
+
+camera:
+  landmark_backend: "webgl_gpu"   # GPU inference through an isolated local WebGL runtime
+  landmark_browser_path: null     # Auto-detect installed Chrome/Edge; optional explicit executable
+  landmark_batch_size: 4          # Lossless frames per GPU transport call; no frame dropping
+  camera_index: 0
+  auto_detect: true
+  show_landmarks: true
+  landmark_fps: 12.0              # Preview landmark worker sampling rate
+  landmark_width: 640             # Detector image width, preserving aspect ratio
+  detection_confidence: 0.5
+  tracking_confidence: 0.5
+  start_motion_threshold: 0.8     # Mean hand displacement in palm widths / second
+  stop_motion_threshold: 0.35
+  start_hold_seconds: 0.15
+  end_hold_seconds: 0.9           # End after hands stay still this long
+  lost_hand_seconds: 0.4          # End after hands leave the frame
+  min_gesture_seconds: 0.7
+  max_gesture_seconds: 6.0
+  pre_roll_seconds: 0.4           # Keep the beginning of gestures while detecting motion
+  cooldown_seconds: 0.8
+  overlay_max_age_seconds: 0.5    # Hide stale landmarks

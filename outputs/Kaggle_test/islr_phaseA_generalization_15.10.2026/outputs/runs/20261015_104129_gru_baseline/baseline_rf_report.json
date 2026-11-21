@@ -1,0 +1,11 @@
+{
+  "mode": "baseline_rf",
+  "num_train_samples": 5568,
+  "num_test_samples": 1141,
+  "feature_dim_summary": 572,
+  "top1_accuracy": 0.7572,
+  "top3_accuracy": 0.9404,
+  "macro_f1": 0.7564,
+  "seed": 42,
+  "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b"
+}

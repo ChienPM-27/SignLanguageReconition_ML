@@ -583,6 +583,58 @@ class EvaluationConfig:
 
 
 @dataclass
+class CameraConfig:
+    landmark_backend: str = "webgl_gpu"
+    landmark_browser_path: Optional[str] = None
+    landmark_batch_size: int = 4
+    camera_index: int = 0
+    auto_detect: bool = True
+    show_landmarks: bool = True
+    landmark_fps: float = 12.0
+    landmark_width: int = 640
+    detection_confidence: float = 0.5
+    tracking_confidence: float = 0.5
+    start_motion_threshold: float = 0.8
+    stop_motion_threshold: float = 0.35
+    start_hold_seconds: float = 0.15
+    end_hold_seconds: float = 0.9
+    lost_hand_seconds: float = 0.4
+    min_gesture_seconds: float = 0.7
+    max_gesture_seconds: float = 6.0
+    pre_roll_seconds: float = 0.4
+    cooldown_seconds: float = 0.8
+    overlay_max_age_seconds: float = 0.5
+
+    def validate(self) -> None:
+        if not isinstance(self.landmark_backend, str) or self.landmark_backend not in {"cpu", "webgl_gpu"}:
+            raise ValueError("camera.landmark_backend must be 'cpu' or 'webgl_gpu'.")
+        if self.landmark_browser_path is not None and (not isinstance(self.landmark_browser_path, str)
+                or not self.landmark_browser_path.strip()):
+            raise ValueError("camera.landmark_browser_path must be null or a non-empty path.")
+        for key in ("auto_detect", "show_landmarks"):
+            if not isinstance(getattr(self, key), bool):
+                raise TypeError(f"camera.{key} must be a boolean.")
+        for key, minimum in (("camera_index", 0), ("landmark_width", 1), ("landmark_batch_size", 1)):
+            value = getattr(self, key)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f"camera.{key} must be an integer >= {minimum}.")
+        for key in ("landmark_fps", "start_motion_threshold", "stop_motion_threshold",
+                    "start_hold_seconds", "end_hold_seconds", "lost_hand_seconds", "min_gesture_seconds",
+                    "max_gesture_seconds", "pre_roll_seconds", "cooldown_seconds", "overlay_max_age_seconds"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"camera.{key} must be a finite positive number.")
+        for key in ("detection_confidence", "tracking_confidence"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
+                raise ValueError(f"camera.{key} must be in (0, 1].")
+        if self.stop_motion_threshold >= self.start_motion_threshold:
+            raise ValueError("camera.stop_motion_threshold must be below camera.start_motion_threshold.")
+        if self.min_gesture_seconds >= self.max_gesture_seconds:
+            raise ValueError("camera.min_gesture_seconds must be below camera.max_gesture_seconds.")
+
+
+@dataclass
 class Config:
     env: EnvConfig = field(default_factory=EnvConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -597,6 +649,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     run: RunConfig = field(default_factory=RunConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    camera: CameraConfig = field(default_factory=CameraConfig)
 
     def validate(self) -> None:
         self.env.validate()
@@ -612,6 +665,7 @@ class Config:
         self.training.validate()
         self.run.validate()
         self.evaluation.validate()
+        self.camera.validate()
         if self.model.region_fusion and (self.features.set != "hands_pose" or not self.features.face
                 or self.features.wrist_reference != "image" or self.features.palm_scale != "frame"
                 or self.features.fingertip_displacement or self.features.bend_cosines
@@ -653,6 +707,7 @@ _SECTION_CLASSES = {
     "training": TrainingConfig,
     "run": RunConfig,
     "evaluation": EvaluationConfig,
+    "camera": CameraConfig,
 }
 
 

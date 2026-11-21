@@ -1,5 +1,7 @@
 # Priority 0 (P0) Validation & Verification Report
 
+> **Current-status correction — 2026-11-05:** this is a historical schema-v2 report, not current certification. Code now uses schema v3; the self-contained recheck reports **237 passed / 1 failed**, pyflakes clean, and eight unresolved Gate A/B P1 issues. Some historical test names/commands and the blanket completion claim below are not reliable evidence. Corrected baseline measurements remain pending. See [the current audit and phased repair plan](astra_remediation_plan.md) and [Gate A/B review](astra_gates_a_b_review.md). The real preprocessing entrypoint is `scripts/10_prepare_data.py --stage preprocess`; `scripts/10_preprocess.py` referenced below does not exist. Preserve historical results separately from new schema/cache/checkpoint artifacts.
+
 ## Executive Summary
 
 This report documents the verification, parity tests, and regression results for the **Priority 0 (P0)** implementation plan in `reports/p0_implementation_plan.md`.

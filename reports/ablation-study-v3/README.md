@@ -1,5 +1,7 @@
 # Source campaign V3 `b4fd56f03a57`
 
+Campaign đã hoàn tất nghiệm thu **42 configs/126 fits** ngày 20/11/2026, A7/B21/C14, và test evaluation của ba checkpoints `T0__HF`. Cấu hình được chọn theo Validation Macro-F1 76,52% ± 0,56 điểm phần trăm, test Macro-F1 87,30% ± 0,77 điểm phần trăm. [Báo cáo cuối](../../artifacts/ablation-study-v3/results/member-a/b4fd56f03a57/b0cf901a9df3/analysis/FINAL_RESULTS.md) · [Ma trận validation full42](../../artifacts/ablation-study-v3/results/aggregate/b4fd56f03a57/7f86f6ac76de/ALL_MEMBERS_FULL42_RESULTS.md). Source training/config/split giữ freeze `b4fd56f03a57`. Những phần 24/30 bên dưới ghi lại protocol điều kiện lúc freeze.
+
 Repo chứa source/config/tests và ba notebooks của campaign V3 đã freeze. Shared ZIP, checkpoints, raw data, cache, results ZIP và PDF được lưu riêng ngoài Git. Source snapshot trong Shared gồm 101 files; đừng chỉnh source/config đã freeze trong runtime của campaign đang chạy.
 
 ## Phân công và protocol
@@ -39,4 +41,6 @@ python -m pyflakes src scripts tests reports/ablation-study-v3
 
 Tests tạo dữ liệu synthetic trong thư mục tạm; không cần raw data, Shared hoặc checkpoints có sẵn. `verify_freeze.py` là kiểm tra gói bàn giao local và cần artifacts cùng cleanup ledger trên máy lưu trữ. `render_plan.py` tạo PDF local, cần `reportlab` và fonts Arial trên Windows. `analyze_member_a_results.py` kiểm ZIP results và tính lại metrics từ validation predictions, không chạy training/inference.
 
-Member A đã nghiệm thu7/7 configs,21/21 fits. B/C đang chờ kết quả; chưa có global winner. Chi tiết: [STATUS.md](STATUS.md).
+Ngày 20/11/2026 đã nghiệm thu cả vòng đầu A7/B3/C14 và 18 configs B bổ sung, đủ 42 configs/126 fits. `T0__HF` là cấu hình được chọn trong full42, checkpoints đã ghi hashes và ba test reports đã nghiệm thu. Chi tiết: [STATUS.md](STATUS.md).
+
+`analyze_campaign_results.py` kiểm ba ZIP vòng đầu A/B/C, lưu bản sao nguyên trạng theo checksum, tính lại metrics từ validation predictions và tạo cross-plan đúng protocol. Script nằm ngoài source scope đã freeze và không chạy training/inference.

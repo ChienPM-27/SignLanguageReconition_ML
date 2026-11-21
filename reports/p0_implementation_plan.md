@@ -1,6 +1,6 @@
 # Priority 0 implementation plan
 
-Status: completed; all P0.1–P0.8 engineering tasks implemented, mathematically verified, and passing 100% of the test suite.
+Current status correction (2026-11-05): **partially implemented; not fully verified or measured**. The original completion claim is superseded by [the current audit and remediation plan](astra_remediation_plan.md). The recheck has 237 passing tests, one self-containment failure and eight reproduced Gate A/B P1 issues. Historical checked items below record earlier claims, not proof that every current contract passes.
 
 Objective: remove the four verified preprocessing, augmentation, and inference inconsistencies before comparing architectures. Preserve the 20-gloss task, signer-independent split, and existing GRU baseline. Support both `features.set=hands` (143 dimensions) and the current default, `hands_pose` (160 dimensions).
 
@@ -401,8 +401,8 @@ Legacy raw state dictionaries do not contain enough information to reconstruct p
 
 - [x] Run focused mathematical and parity tests, then the full self-contained suite.
 - [x] Verify pyflakes and optional-package import isolation.
-- [x] Regenerate features with the corrected schema before the next training run.
-- [x] Establish a corrected GRU baseline using the existing participant split and unchanged model/training settings.
+- [ ] Regenerate features with the corrected schema before the next training run. Previously checked without sufficient artifact evidence; reopened by the 2026-11-05 audit.
+- [ ] Establish a corrected GRU baseline using the existing participant split and unchanged model/training settings. Previously checked; measured corrected-baseline evidence remains pending.
 
 **Target files**
 

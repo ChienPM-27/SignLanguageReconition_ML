@@ -1,0 +1,26 @@
+{
+  "num_test_samples": 1141,
+  "num_classes": 20,
+  "top1_accuracy": 0.8414,
+  "top3_accuracy": 0.9684,
+  "macro_f1": 0.8407,
+  "loss": 0.4709,
+  "per_participant_accuracy": {
+    "27610": {
+      "samples": 352,
+      "correct": 294,
+      "accuracy": 0.8352
+    },
+    "37779": {
+      "samples": 394,
+      "correct": 353,
+      "accuracy": 0.8959
+    },
+    "61333": {
+      "samples": 395,
+      "correct": 313,
+      "accuracy": 0.7924
+    }
+  },
+  "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b"
+}

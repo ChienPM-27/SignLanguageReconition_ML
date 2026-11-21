@@ -1,5 +1,13 @@
 # Config training và branch A/B/C
 
+**Phạm vi đang áp dụng từ 2026-11-13: face bắt buộc, 30 configs / 90 lượt train.**
+Xem [FACE_REQUIRED_PLAN.md](../../reports/ablation-study-v2/FACE_REQUIRED_PLAN.md).
+Dùng notebooks/gói trong `artifacts/ablation-study-v2/face-only-v1`:
+A 4 configs, B 15, C 11. Các YAML và queue nguồn dưới đây giữ nguyên superset
+60 để bảo toàn source freeze và kết quả đang có; notebook mới chỉ chọn face IDs.
+
+Phần dưới mô tả bộ configs nguồn và kế hoạch 60 cells ban đầu.
+
 Source chung đã có compact Face (+36 channels), schema v5 và Transformer encoder.
 Ba branch cùng chứa source và cả 60 configs để source manifest giống nhau khi freeze.
 Mỗi member chạy folder của mình; không thay source/config trong campaign đã freeze.

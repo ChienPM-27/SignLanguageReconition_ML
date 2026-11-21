@@ -1,4 +1,14 @@
-graphify-out/graph.json merge=graphify
+* text=auto
+*.py text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.task filter=lfs diff=lfs merge=lfs -text
+*.wasm filter=lfs diff=lfs merge=lfs -text
+# Preserve the exact accepted checksums on Windows and Linux.
+artifacts/ablation-study-v3/deployment/**/*.csv -text
+models/mediapipe-web/** -text
 # Giữ nguyên bytes của snapshots qua checkout Windows và Linux.
 reports/ablation-study/shared/config.yaml text eol=lf
 reports/ablation-study/shared/source_commit.txt text eol=lf

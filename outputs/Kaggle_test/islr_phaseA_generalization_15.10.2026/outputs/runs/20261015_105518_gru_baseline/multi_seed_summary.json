@@ -1,0 +1,113 @@
+{
+  "num_seeds": 3,
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b",
+  "top1_accuracy_mean": 0.8531,
+  "top1_accuracy_std": 0.0194,
+  "top3_accuracy_mean": 0.9722,
+  "top3_accuracy_std": 0.0029,
+  "macro_f1_mean": 0.8467,
+  "macro_f1_std": 0.0222,
+  "individual_runs": [
+    {
+      "seed": 42,
+      "run_dir": "/kaggle/working/outputs/runs/20261015_105518_gru_baseline/seed_42",
+      "test_report": {
+        "num_test_samples": 1141,
+        "num_classes": 20,
+        "top1_accuracy": 0.8668,
+        "top3_accuracy": 0.9728,
+        "macro_f1": 0.8593,
+        "loss": 0.4169,
+        "per_participant_accuracy": {
+          "27610": {
+            "samples": 352,
+            "correct": 306,
+            "accuracy": 0.8693
+          },
+          "37779": {
+            "samples": 394,
+            "correct": 354,
+            "accuracy": 0.8985
+          },
+          "61333": {
+            "samples": 395,
+            "correct": 329,
+            "accuracy": 0.8329
+          }
+        },
+        "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b"
+      },
+      "best_val_loss": 1.3077887890142796,
+      "best_val_acc": 0.7298701298701299
+    },
+    {
+      "seed": 43,
+      "run_dir": "/kaggle/working/outputs/runs/20261015_105518_gru_baseline/seed_43",
+      "test_report": {
+        "num_test_samples": 1141,
+        "num_classes": 20,
+        "top1_accuracy": 0.8256,
+        "top3_accuracy": 0.9684,
+        "macro_f1": 0.8154,
+        "loss": 0.5115,
+        "per_participant_accuracy": {
+          "27610": {
+            "samples": 352,
+            "correct": 287,
+            "accuracy": 0.8153
+          },
+          "37779": {
+            "samples": 394,
+            "correct": 344,
+            "accuracy": 0.8731
+          },
+          "61333": {
+            "samples": 395,
+            "correct": 311,
+            "accuracy": 0.7873
+          }
+        },
+        "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b"
+      },
+      "best_val_loss": 1.3548582266935538,
+      "best_val_acc": 0.6952380952380952
+    },
+    {
+      "seed": 44,
+      "run_dir": "/kaggle/working/outputs/runs/20261015_105518_gru_baseline/seed_44",
+      "test_report": {
+        "num_test_samples": 1141,
+        "num_classes": 20,
+        "top1_accuracy": 0.8668,
+        "top3_accuracy": 0.9755,
+        "macro_f1": 0.8653,
+        "loss": 0.4161,
+        "per_participant_accuracy": {
+          "27610": {
+            "samples": 352,
+            "correct": 295,
+            "accuracy": 0.8381
+          },
+          "37779": {
+            "samples": 394,
+            "correct": 364,
+            "accuracy": 0.9239
+          },
+          "61333": {
+            "samples": 395,
+            "correct": 330,
+            "accuracy": 0.8354
+          }
+        },
+        "git_commit_hash": "d425b1afa1c46650557f4d8a18a6b8dc366ca41b"
+      },
+      "best_val_loss": 1.333564415432158,
+      "best_val_acc": 0.716017316017316
+    }
+  ]
+}

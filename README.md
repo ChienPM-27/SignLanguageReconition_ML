@@ -2,6 +2,23 @@
 
 Hệ thống nhận diện ngôn ngữ ký hiệu Mỹ (Isolated Sign Language Recognition - ISLR) 20 gloss dựa trên dataset Kaggle `asl-signs` (MediaPipe Holistic landmarks trích xuất sẵn trong định dạng Parquet) và mô hình GRU (Gated Recurrent Unit).
 
+## Test demo camera từ branch `main`
+
+Source demo và toàn bộ checkpoints được cung cấp trên `main` qua **Git LFS**: 126 checkpoints V3 (42 configs × seeds 42/43/44), 16 checkpoints cũ và 3 MediaPipe task models. Không cần tải dataset hoặc ZIP kết quả training để chạy camera. Xem [hướng dẫn cài và chạy demo](demos/README.md).
+
+```powershell
+git lfs install
+git clone --branch main https://github.com/ChienPM-27/SignLanguageReconition_ML.git
+cd SignLanguageReconition_ML
+git lfs pull
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-inference.txt
+.\.venv\Scripts\python.exe -X utf8 demos/camera_v3.py --list-models
+.\demos\RUN_CAMERA.cmd
+```
+
+Demo mặc định dùng landmarks GPU qua Chrome/Edge đã cài trên Windows. Có thể chạy CPU bằng `.\demos\RUN_CAMERA.cmd --set camera.landmark_backend=cpu`. Các phần dưới mô tả pipeline training và demo GRU cũ.
+
 ## 1. Mục tiêu và Kiến trúc
 - **Dataset:** Kaggle Competition `asl-signs` (543 landmarks/frame: face, pose, left_hand, right_hand; frame thiếu landmark = NaN).
 - **Mục tiêu:** Nhận diện 20 gloss mục tiêu với phân chia người ký độc lập (Signer-Independent split).

@@ -1,0 +1,60 @@
+setup_check:
+  status: SUCCESS
+  environment:
+    env_name: kaggle
+    repo_root: /kaggle/working/SignLanguageReconition_ML
+    persistent_root: /kaggle/working
+    data_dir: /kaggle/input/competitions/asl-signs
+    cache_dir: /kaggle/temp/data/cache
+    output_dir: /kaggle/working/outputs
+    report_dir: /kaggle/working/reports
+    selection_dir: /kaggle/working/data/selection
+    is_kaggle_input_readonly: true
+  gpu_info:
+    available: true
+    device_name: Tesla T4
+    device_count: 2
+  kaggle_credentials_status: absent
+  catalog_path: /kaggle/input/competitions/asl-signs/train.csv
+  catalog_records: 94477
+  probed_file:
+    remote_path: train_landmark_files/55372/4233835137.parquet
+    local_path: /kaggle/input/competitions/asl-signs/train_landmark_files/55372/4233835137.parquet
+    schema_summary: &id001
+      num_rows: 11403
+      num_columns: 7
+      column_names:
+      - frame
+      - row_id
+      - type
+      - landmark_index
+      - x
+      - y
+      - z
+      column_types:
+        frame: int16
+        row_id: string
+        type: string
+        landmark_index: int16
+        x: double
+        y: double
+        z: double
+      num_frames: 21
+      landmarks_per_frame: 543
+      landmark_types:
+      - face
+      - left_hand
+      - pose
+      - right_hand
+      schema_verified: true
+  probed_files:
+  - remote_path: train_landmark_files/55372/4233835137.parquet
+    local_path: /kaggle/input/competitions/asl-signs/train_landmark_files/55372/4233835137.parquet
+    schema_summary: *id001
+    fetch_observation:
+      source: cache
+      delivered_as: null
+      relocated: false
+  schema_verification:
+    all_expectations_met: true
+    discrepancies: []

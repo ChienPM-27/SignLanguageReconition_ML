@@ -1,0 +1,10 @@
+{
+  "mode": "overfit_check",
+  "num_samples": 20,
+  "num_classes": 20,
+  "epochs": 50,
+  "final_train_loss": 0.0016,
+  "final_train_acc": 1.0,
+  "passed": true,
+  "git_commit_hash": "7b2097d72749db61930860d2cf76811ceefe0ca0"
+}
